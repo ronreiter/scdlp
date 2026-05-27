@@ -1,6 +1,6 @@
-// Command scdlp-agent runs the daemon: IPC server + decision engine + MockHook.
-// The real Endpoint Security hook lands in a follow-up plan; the engine is
-// hook-agnostic.
+// Command scdlp-agent runs the daemon: IPC server + decision engine + hook.
+// Use --hook=mock (default) for development or --hook=esf for real Endpoint
+// Security interception (requires entitlement/root).
 package main
 
 import (
@@ -25,6 +25,7 @@ func main() {
 	auditPath := flag.String("audit", filepath.Join(defaultDir, "audit.db"), "audit DB path")
 	sockPath := flag.String("socket", defaultSocketPath(), "IPC socket path")
 	home := flag.String("home", os.Getenv("HOME"), "user home dir for path-rule expansion")
+	hookKind := flag.String("hook", "mock", "event source: mock | esf")
 	flag.Parse()
 
 	_ = os.MkdirAll(filepath.Dir(*rulesPath), 0o755)
@@ -52,9 +53,22 @@ func main() {
 	defer srv.Stop()
 	log.Printf("scdlp-agent up: socket=%s rules=%s audit=%s", *sockPath, *rulesPath, *auditPath)
 
-	// Today: run against a MockHook so the daemon is exercisable end-to-end.
-	// Tomorrow: swap in an EndpointSecurityHook here.
-	mh := hook.NewMock()
+	var h hook.Hook
+	switch *hookKind {
+	case "mock":
+		h = hook.NewMock()
+		log.Print("hook: MockHook (no real opens are intercepted)")
+	case "esf":
+		eh, err := hook.NewESFHook()
+		if err != nil {
+			log.Fatalf("ESF hook: %v", err)
+		}
+		defer eh.Close()
+		h = eh
+		log.Print("hook: EndpointSecurity")
+	default:
+		log.Fatalf("unknown --hook %q (want mock|esf)", *hookKind)
+	}
 
 	// Drain prompts to stderr; the Swift helper will subscribe over IPC later.
 	go func() {
@@ -66,7 +80,7 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go eng.Run(ctx, mh)
+	go eng.Run(ctx, h)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)

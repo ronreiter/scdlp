@@ -14,10 +14,8 @@ scdlp_es_client_t scdlp_es_new_client(int* err_out) {
         if (m->event_type != ES_EVENT_TYPE_AUTH_OPEN) {
             return;
         }
-        es_message_t* held = es_copy_message(m);
-        if (!held) {
-            return;
-        }
+        es_message_t* held = (es_message_t*)m;
+        es_retain_message(held);
 
         scdlp_es_event_t ev;
         ev.cookie = (uint64_t)(uintptr_t)held;

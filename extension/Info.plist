@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>io.sentra.scdlp.extension</string>
+    <key>CFBundleName</key>
+    <string>Scdlp</string>
+    <key>CFBundleDisplayName</key>
+    <string>scdlp Endpoint Security Extension</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleExecutable</key>
+    <string>Scdlp</string>
+    <key>CFBundlePackageType</key>
+    <string>SYSX</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSSystemExtensionUsageDescription</key>
+    <string>scdlp blocks unknown processes from reading your credentials.</string>
+    <key>NSEndpointSecurityRebootRequired</key>
+    <false/>
+    <key>NSEndpointSecurityEarlyBoot</key>
+    <false/>
+    <key>NSEndpointSecurityClient</key>
+    <true/>
+</dict>
+</plist>

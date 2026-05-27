@@ -478,6 +478,16 @@ scdlp/
 - Per-user rules (currently single-user assumed; multi-user Mac will share rules.db).
 - Snapshot/restore of rules (`scdlp export` / `scdlp import`).
 
+## 12. Known follow-ups from the v1 core implementation
+
+The v1 core landed via plan `docs/superpowers/plans/2026-05-27-scdlp-v1-core.md`. The following items from §4–§7 were intentionally deferred and must be addressed before any production ship:
+
+- **IPC peer authentication.** §5.6 calls for the agent to verify the peer's audit token against pinned Team ID + bundle ID. The current implementation uses a Unix socket at `os.TempDir()/scdlp.sock` with mode `0660` and no peer check. Any local process running as the same user can `Dial` it and add allow-rules. This is acceptable for the pre-ESF MockHook era; it is **not** acceptable once real opens are being blocked. Track as a v1.1 must-fix.
+- **`scdlp doctor` and `scdlp pause`** (§5.3) — listed as required CLI subcommands; not yet implemented. v1 has `status / list / add / revoke / tail` only. Both are shell-thin over the existing IPC.
+- **Audit retention.** §7 requires the audit table to ring-buffer at 100 k rows. v1 has no cap, no trim trigger, no counter in `status`. Add a trigger or a periodic vacuum task.
+- **`meta` table.** §5.4 defines `meta(k, v)` with keys `schema_version`, `install_ts`, `last_helper_seen`, `paused_until`. Created by the migration but never written or read. Wire up at least `install_ts` and `schema_version` so future migrations have a hook.
+- **Mach XPC vs. Unix socket.** §4 and §5.6 assume Mach XPC with `io.sentra.scdlp.agent`. v1 ships Unix-socket length-prefixed JSON. When the Swift helper lands it will need either an NSXPC bridge or a Unix-socket client; the protocol is already shape-compatible with both.
+
 ---
 
 End of spec.

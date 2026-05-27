@@ -15,7 +15,7 @@ var ProviderPatterns = map[string]*regexp.Regexp{
 	"google-api":     regexp.MustCompile(`^(AIza[0-9A-Za-z_\-]{35}|ya29\.[0-9A-Za-z_\-]{20,})$`),
 	"npm-token":      regexp.MustCompile(`^npm_[A-Za-z0-9]{30,}$`),
 	"huggingface":    regexp.MustCompile(`^hf_[A-Za-z0-9]{30,}$`),
-	"sentry":         regexp.MustCompile(`^sntr[ysu]_[A-Za-z0-9]{30,}$`),
+	"sentry":         regexp.MustCompile(`^sntry[su]_[A-Za-z0-9]{30,}$`),
 	"sendgrid":       regexp.MustCompile(`^SG\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}$`),
 	"jwt":            regexp.MustCompile(`^eyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+$`),
 }

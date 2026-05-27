@@ -55,6 +55,24 @@ func TestClassifyBuf_PlaceholderIgnored(t *testing.T) {
 	}
 }
 
+func TestClassifyBuf_SentryToken(t *testing.T) {
+	cases := map[string]string{
+		"sntrys_": "SENTRY_AUTH_TOKEN=sntrys_abcdefghijklmnopqrstuvwxyz0123456789\n",
+		"sntryu_": "SENTRY_USER_AUTH_TOKEN=sntryu_abcdefghijklmnopqrstuvwxyz0123456789\n",
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			v := New().ClassifyBuf([]byte(body))
+			if v.Match != "sentry" {
+				t.Fatalf("want match=sentry, got %+v", v)
+			}
+			if !v.IsSecret() {
+				t.Fatalf("want IsSecret true, got %+v", v)
+			}
+		})
+	}
+}
+
 func TestClassifyBuf_TruncatedAt4K(t *testing.T) {
 	junk := make([]byte, 8192)
 	for i := range junk {

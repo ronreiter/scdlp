@@ -19,3 +19,8 @@ var ProviderPatterns = map[string]*regexp.Regexp{
 	"sendgrid":       regexp.MustCompile(`^SG\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}$`),
 	"jwt":            regexp.MustCompile(`^eyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+$`),
 }
+
+// PEMPrivateKeyRe matches the header line of any PEM-encoded private key.
+// We trigger on the literal header, not full PEM well-formedness, because the
+// 4 KiB window may truncate the body of a large RSA key.
+var PEMPrivateKeyRe = regexp.MustCompile(`-----BEGIN (RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----`)

@@ -49,11 +49,11 @@ func (d *daemonBackend) ListRules(r ipc.ListReq) ([]ipc.RuleRow, error) {
 
 func (d *daemonBackend) Status() (ipc.StatusRow, error) {
 	rs, _ := d.rdb.List(rules.ListFilter{})
-	evts, _ := d.adb.Tail(audit.TailFilter{Limit: 1})
+	n, _ := d.adb.Count()
 	return ipc.StatusRow{
 		Healthy:     true,
 		RulesTotal:  len(rs),
-		AuditEvents: len(evts),
+		AuditEvents: n,
 		Mode:        "enforce",
 		UptimeSec:   time.Now().Unix() - d.startTS,
 	}, nil

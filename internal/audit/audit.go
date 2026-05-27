@@ -107,3 +107,10 @@ func (s *Store) Tail(f TailFilter) ([]Event, error) {
 	}
 	return out, rows.Err()
 }
+
+// Count returns the total number of audit rows.
+func (s *Store) Count() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM audit`).Scan(&n)
+	return n, err
+}

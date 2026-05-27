@@ -43,6 +43,20 @@ func TestStore_LogAndTail(t *testing.T) {
 	}
 }
 
+func TestStore_Count(t *testing.T) {
+	s := openTest(t)
+	for i := 0; i < 7; i++ {
+		_ = s.Log(Event{TS: int64(i + 1), Verdict: "allow"})
+	}
+	n, err := s.Count()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 7 {
+		t.Fatalf("expected 7, got %d", n)
+	}
+}
+
 func TestStore_TailLimit(t *testing.T) {
 	s := openTest(t)
 	for i := 0; i < 5; i++ {

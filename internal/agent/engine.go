@@ -93,7 +93,10 @@ func (e *Engine) decideInner(ev hook.Event) (hook.Decision, *audit.Event) {
 		return hook.Allow, nil
 	}
 
-	id, _ := e.cfg.Resolver.Resolve(ev.PID)
+	id, err := e.cfg.Resolver.Resolve(ev.PID)
+	if err != nil {
+		e.cfg.Logger.Printf("identity resolve pid=%d: %v", ev.PID, err)
+	}
 	if id.Exe == "" {
 		id.Exe = ev.Exe
 		if len(id.Chain) == 0 {
@@ -123,6 +126,11 @@ func (e *Engine) decideInner(ev hook.Event) (hook.Decision, *audit.Event) {
 		ProcessChain: strings.Join(id.HumanChain(), "|"),
 		IdentityKey:  id.KeyHex,
 		MatchedKind:  matchedKind,
+	}
+
+	if r != nil {
+		audited.FileKey = r.FileKey
+		audited.FileKeyKind = string(r.FileKeyKind)
 	}
 
 	switch {

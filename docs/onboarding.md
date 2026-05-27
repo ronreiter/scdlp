@@ -51,12 +51,26 @@ make build
 
 Today the daemon is wired to a `MockHook`, so no real opens are intercepted; the e2e test in `e2e/shaihulud_test.go` exercises the same machinery end-to-end against synthetic events.
 
-## What's NOT in this repo yet
+## ESF backend (lives in `internal/hook/esf_*` and `extension/`, `host/`)
 
-The actual Endpoint Security System Extension. That needs:
+As of the ESF plan, the System Extension exists in the repo:
 
-1. The `com.apple.developer.endpoint-security.client` entitlement from Apple.
-2. An Xcode project for the System Extension target, a Swift host app to package it, and code-signing / notarization wired into a release pipeline.
-3. A cgo glue file calling `libEndpointSecurity` and feeding events into the `Hook` interface defined in `internal/hook/hook.go`.
+- `internal/hook/esf_glue.{h,c}` — cgo glue around `libEndpointSecurity`.
+- `internal/hook/esf_darwin.go` — Go `Hook` implementation; bridges ES events
+  into the decision engine.
+- `extension/` — System Extension bundle metadata (Info.plist + entitlements)
+  + `build.sh` that compiles the Go agent and assembles the
+  `Scdlp.systemextension`.
+- `host/` — minimal Swift activator app (`main.swift`) and bundle metadata.
+- `Makefile` targets `extension`, `host`, `bundle`, `activate`, `deactivate`.
 
-The Go core is ESF-agnostic; landing the ESF backend is purely a new `internal/hook/esf_darwin.go` plus the Xcode project. The decision engine, classifier, rules/audit stores, and CLI ship as-is.
+What is still out-of-band:
+
+1. The `com.apple.developer.endpoint-security.client` entitlement from Apple
+   (`docs/signing.example.md`).
+2. A Developer ID signing identity.
+3. Notarization if you intend to distribute the .app.
+
+Without (1) and (2), the bundle builds and installs but `es_new_client` returns
+`ERR_NOT_ENTITLED` at runtime. To exercise ESF before the entitlement is
+granted, see `docs/dev-mode.md`.

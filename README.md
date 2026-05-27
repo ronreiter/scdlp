@@ -51,6 +51,32 @@ make test            # unit + e2e
 make bench           # decision-path microbenchmark
 ```
 
+## Real-kernel mode (ESF)
+
+The `scdlp-agent` binary supports a `--hook=esf` flag that subscribes to the
+macOS Endpoint Security framework instead of the in-process MockHook. To use
+it you need:
+
+1. The `com.apple.developer.endpoint-security.client` entitlement granted by
+   Apple to your Team ID (see `docs/signing.example.md`), OR
+2. A SIP-relaxed dev Mac (see `docs/dev-mode.md`).
+
+Once one of the above is in place:
+
+```bash
+make bundle               # builds extension + host .app, ad-hoc signed by default
+sudo ./dist/scdlp.app/Contents/MacOS/scdlp-host activate
+```
+
+System Settings prompts you to approve the System Extension and grant Full
+Disk Access. After approval, real `open()` calls flow through scdlp's
+decision engine and the existing CLI (`scdlp status`, `scdlp tail`, …)
+reflects live decisions.
+
+```bash
+make deactivate           # remove the extension
+```
+
 ## License
 
 MIT.

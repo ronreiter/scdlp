@@ -9,6 +9,10 @@ import (
 // Frame layout: 4-byte BE length || N-byte payload
 // Payload: 1-byte tag || JSON body
 
+// MaxFrameSize bounds the on-the-wire frame so a malicious peer cannot
+// trigger an unbounded allocation.
+const MaxFrameSize = 1 << 20 // 1 MiB
+
 const (
 	TagPromptRequest  byte = 0x01
 	TagPromptDecision byte = 0x02
@@ -45,6 +49,9 @@ func ReadFrame(r io.Reader) (byte, []byte, error) {
 	n := binary.BigEndian.Uint32(hdr[:4])
 	if n == 0 {
 		return 0, nil, ErrShortRead
+	}
+	if n > MaxFrameSize {
+		return 0, nil, errors.New("ipc: frame too large")
 	}
 	body := make([]byte, n-1)
 	if _, err := io.ReadFull(r, body); err != nil {

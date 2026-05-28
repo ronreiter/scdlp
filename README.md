@@ -20,25 +20,27 @@ Three local processes:
 
 ## Build
 
-```bash
-make build
-```
+We use [`go-task`](https://taskfile.dev) instead of make. Install once with
+`brew install go-task`, then:
 
-Outputs `bin/scdlp-agent` and `bin/scdlp`.
+```bash
+task               # show available tasks
+task build         # builds bin/scdlp-agent and bin/scdlp
+```
 
 ## Run
 
 In one terminal:
 
 ```bash
-./bin/scdlp-agent
+task run:mock      # daemon with MockHook (no real opens intercepted)
 ```
 
 In another:
 
 ```bash
-./bin/scdlp status
-./bin/scdlp tail --since 5m
+task cli:status
+task cli:tail
 ./bin/scdlp list
 ```
 
@@ -47,8 +49,8 @@ See `docs/onboarding.md` for a full walkthrough including the in-process Shai-Hu
 ## Test
 
 ```bash
-make test            # unit + e2e
-make bench           # decision-path microbenchmark
+task test          # unit + e2e
+task bench         # decision-path microbenchmark
 ```
 
 ## Real-kernel mode (ESF)
@@ -61,11 +63,21 @@ it you need:
    Apple to your Team ID (see `docs/signing.example.md`), OR
 2. A SIP-relaxed dev Mac (see `docs/dev-mode.md`).
 
-Once one of the above is in place:
+For path #2, scdlp ships dev-mode helpers:
 
 ```bash
-make bundle               # builds extension + host .app, ad-hoc signed by default
-sudo ./dist/scdlp.app/Contents/MacOS/scdlp-host activate
+task nvram:status              # show current SIP + boot-args
+task nvram:init-dev-mode       # set the AMFI/CS boot-args (sudo, restart after)
+task systemextensions:dev-on   # allow extensions outside /Applications
+task doctor                    # one-shot state dump
+```
+
+Once one of the two paths is set up:
+
+```bash
+task bundle                    # build extension + host .app (ad-hoc signed by default)
+task install                   # cp to /Applications + lsregister
+task activate                  # request macOS to install the extension
 ```
 
 System Settings prompts you to approve the System Extension and grant Full
@@ -74,7 +86,8 @@ decision engine and the existing CLI (`scdlp status`, `scdlp tail`, …)
 reflects live decisions.
 
 ```bash
-make deactivate           # remove the extension
+task deactivate                # remove the extension
+task nvram:revert              # clear dev-mode boot-args (restart after)
 ```
 
 ## License

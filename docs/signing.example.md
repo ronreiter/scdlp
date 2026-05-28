@@ -26,8 +26,9 @@ export SCDLP_TEAM_ID="TEAMID12345"
 Then:
 
 ```bash
-make bundle
-make activate
+task bundle
+task install
+task activate
 ```
 
 The first `activate` will prompt the user to approve the System Extension and
@@ -35,7 +36,7 @@ grant Full Disk Access in System Settings → Privacy & Security.
 
 ## Verifying the entitlement landed
 
-After `make extension`, the codesign verify output should include
+After `task extension`, the codesign verify output should include
 `com.apple.developer.endpoint-security.client`. If it doesn't, the entitlement
 file isn't being read; check `extension/Scdlp.entitlements` is present and
 that `codesign` reports no errors.

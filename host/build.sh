@@ -4,7 +4,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DIST="$REPO/dist"
 APP="$DIST/scdlp.app"
-EXT_SRC="$DIST/Scdlp.systemextension"
+EXT_SRC="$DIST/io.sentra.scdlp.extension.systemextension"
 SIGN_ID="${SCDLP_SIGN_ID:--}"
 
 if [[ ! -d "$EXT_SRC" ]]; then

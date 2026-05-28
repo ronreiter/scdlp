@@ -5,7 +5,7 @@
     <key>CFBundleIdentifier</key>
     <string>io.sentra.scdlp.extension</string>
     <key>CFBundleName</key>
-    <string>Scdlp</string>
+    <string>io.sentra.scdlp.extension</string>
     <key>CFBundleDisplayName</key>
     <string>scdlp Endpoint Security Extension</string>
     <key>CFBundleVersion</key>
@@ -13,20 +13,24 @@
     <key>CFBundleShortVersionString</key>
     <string>1.0</string>
     <key>CFBundleExecutable</key>
-    <string>Scdlp</string>
+    <string>io.sentra.scdlp.extension</string>
     <key>CFBundlePackageType</key>
     <string>SYSX</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
+    <key>CFBundleSupportedPlatforms</key>
+    <array>
+        <string>MacOSX</string>
+    </array>
+    <key>LSBackgroundOnly</key>
+    <true/>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>NSSystemExtensionUsageDescription</key>
     <string>scdlp blocks unknown processes from reading your credentials.</string>
-    <key>NSEndpointSecurityRebootRequired</key>
-    <false/>
     <key>NSEndpointSecurityEarlyBoot</key>
     <false/>
-    <key>NSEndpointSecurityClient</key>
-    <true/>
+    <key>NSEndpointSecurityMachServiceName</key>
+    <string>io.sentra.scdlp.extension</string>
 </dict>
 </plist>

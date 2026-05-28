@@ -60,8 +60,9 @@ Integrity: disabled` (Apple Silicon), and `boot-args` should contain
 ## Run scdlp under dev mode
 
 ```bash
-make bundle SIGN_ID="-"   # ad-hoc sign
-sudo ./dist/scdlp.app/Contents/MacOS/scdlp-host activate
+task bundle      # build extension + host .app (ad-hoc signed by default)
+task install     # cp to /Applications + lsregister
+task activate    # request macOS to install the extension (sudo)
 ```
 
 The `sudo` is required because un-entitled ES clients also need to run as root.

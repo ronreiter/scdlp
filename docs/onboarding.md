@@ -36,17 +36,20 @@ scdlp/
 
 ## Run end-to-end locally
 
+The project uses [`go-task`](https://taskfile.dev). Install once with `brew install go-task`.
+
 ```bash
-make build
+task build
 # Terminal A
-./bin/scdlp-agent --rules /tmp/scdlp-rules.db --audit /tmp/scdlp-audit.db --home "$HOME"
+task run:mock
 # Terminal B
-./bin/scdlp status
-./bin/scdlp tail
-./bin/scdlp add --file-key aws-credentials --file-kind category \
-                --identity-key abc --identity-kind chain --verdict allow
-./bin/scdlp list
-./bin/scdlp revoke 1
+task cli:status
+task cli:tail
+./bin/scdlp --socket /tmp/scdlp.sock add \
+    --file-key aws-credentials --file-kind category \
+    --identity-key abc --identity-kind chain --verdict allow
+./bin/scdlp --socket /tmp/scdlp.sock list
+./bin/scdlp --socket /tmp/scdlp.sock revoke 1
 ```
 
 Today the daemon is wired to a `MockHook`, so no real opens are intercepted; the e2e test in `e2e/shaihulud_test.go` exercises the same machinery end-to-end against synthetic events.

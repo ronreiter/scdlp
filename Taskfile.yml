@@ -1,0 +1,227 @@
+# Taskfile.yml — go-task build pipeline for scdlp.
+#
+# Install go-task: `brew install go-task` (macOS) or see https://taskfile.dev
+#
+# Run `task` or `task --list` to see all available tasks.
+
+version: '3'
+
+vars:
+  AGENT_BIN: bin/scdlp-agent
+  CLI_BIN: bin/scdlp
+  DIST: dist
+  EXT_BUNDLE: '{{.DIST}}/io.sentra.scdlp.extension.systemextension'
+  APP_BUNDLE: '{{.DIST}}/scdlp.app'
+  INSTALLED_APP: /Applications/scdlp.app
+  SIGN_ID: '{{.SCDLP_SIGN_ID | default "-"}}'
+  TEAM_ID: '{{.SCDLP_TEAM_ID | default "UNSIGNED"}}'
+  RULES_DB: /tmp/scdlp-rules.db
+  AUDIT_DB: /tmp/scdlp-audit.db
+  SOCKET:   /tmp/scdlp.sock
+
+tasks:
+
+  # ───── default ────────────────────────────────────────────────────────────
+
+  default:
+    desc: List all tasks
+    cmds:
+      - task --list
+
+  # ───── build ──────────────────────────────────────────────────────────────
+
+  build:
+    desc: Build both binaries (agent + CLI)
+    deps: [build:agent, build:cli]
+
+  build:agent:
+    desc: Build the daemon binary
+    cmds:
+      - mkdir -p bin
+      - go build -o {{.AGENT_BIN}} ./cmd/scdlp-agent
+    sources:
+      - cmd/scdlp-agent/**/*.go
+      - internal/**/*.go
+      - go.mod
+      - go.sum
+    generates:
+      - '{{.AGENT_BIN}}'
+
+  build:cli:
+    desc: Build the scdlp CLI
+    cmds:
+      - mkdir -p bin
+      - go build -o {{.CLI_BIN}} ./cmd/scdlp
+    sources:
+      - cmd/scdlp/**/*.go
+      - internal/**/*.go
+      - go.mod
+      - go.sum
+    generates:
+      - '{{.CLI_BIN}}'
+
+  # ───── test / quality ─────────────────────────────────────────────────────
+
+  test:
+    desc: Run the full test suite
+    cmds:
+      - go test ./...
+
+  test:race:
+    desc: Run the suite with -race
+    cmds:
+      - go test -race ./...
+
+  bench:
+    desc: Run the decision-path microbenchmark
+    cmds:
+      - go test -bench=. -benchmem ./internal/agent/...
+
+  fmt:
+    desc: gofmt the tree
+    cmds:
+      - go fmt ./...
+
+  vet:
+    desc: go vet the tree
+    cmds:
+      - go vet ./...
+
+  clean:
+    desc: Remove bin/ and dist/
+    cmds:
+      - rm -rf bin dist
+
+  # ───── ESF bundle build ───────────────────────────────────────────────────
+
+  extension:
+    desc: Build the System Extension bundle (extension/build.sh)
+    cmds:
+      - SCDLP_SIGN_ID="{{.SIGN_ID}}" SCDLP_TEAM_ID="{{.TEAM_ID}}" ./extension/build.sh
+
+  host:
+    desc: Build the host .app (host/build.sh) — depends on extension
+    deps: [extension]
+    cmds:
+      - SCDLP_SIGN_ID="{{.SIGN_ID}}" ./host/build.sh
+
+  bundle:
+    desc: 'Alias: build extension + host'
+    deps: [host]
+
+  install:
+    desc: Copy dist/scdlp.app to /Applications and refresh LaunchServices
+    deps: [bundle]
+    cmds:
+      - rm -rf {{.INSTALLED_APP}}
+      - cp -R {{.APP_BUNDLE}} {{.INSTALLED_APP}}
+      - /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f {{.INSTALLED_APP}}
+      - echo "Installed at {{.INSTALLED_APP}}"
+
+  activate:
+    desc: Request System Extension activation (requires admin approval in System Settings)
+    cmds:
+      - sudo {{.INSTALLED_APP}}/Contents/MacOS/scdlp-host activate
+
+  deactivate:
+    desc: Deactivate the installed System Extension
+    cmds:
+      - sudo {{.INSTALLED_APP}}/Contents/MacOS/scdlp-host deactivate
+
+  # ───── run / smoke ────────────────────────────────────────────────────────
+
+  run:mock:
+    desc: Run the daemon with the MockHook (no real opens intercepted)
+    deps: [build:agent]
+    cmds:
+      - ./{{.AGENT_BIN}} --hook=mock --rules {{.RULES_DB}} --audit {{.AUDIT_DB}} --socket {{.SOCKET}} --home "$HOME"
+
+  run:esf:
+    desc: Run the daemon directly under ESF (requires SIP/AMFI dev mode + sudo)
+    deps: [build:agent]
+    cmds:
+      - codesign --force --options runtime --sign - --entitlements extension/Scdlp.entitlements {{.AGENT_BIN}}
+      - sudo ./{{.AGENT_BIN}} --hook=esf --rules {{.RULES_DB}} --audit {{.AUDIT_DB}} --socket {{.SOCKET}} --home "$HOME"
+
+  cli:status:
+    desc: Run `scdlp status` against a running daemon
+    deps: [build:cli]
+    cmds:
+      - ./{{.CLI_BIN}} --socket {{.SOCKET}} status
+
+  cli:tail:
+    desc: Tail recent decisions
+    deps: [build:cli]
+    cmds:
+      - ./{{.CLI_BIN}} --socket {{.SOCKET}} tail
+
+  # ───── dev-mode (SIP-relaxed) — system-wide, reboot required ──────────────
+  #
+  # See docs/dev-mode.md for the full procedure and security trade-offs.
+  # These tasks expect SIP to already be disabled in Recovery.
+
+  nvram:status:
+    desc: Show current SIP and boot-args state
+    cmds:
+      - csrutil status
+      - nvram boot-args 2>&1 || echo "boot-args not set"
+
+  nvram:init-dev-mode:
+    desc: 'Set boot-args to relax AMFI/CS enforcement (sudo, reboot required after)'
+    cmds:
+      - |
+        cat <<'WARN'
+
+        ⚠  About to set boot-args to:
+           amfi_get_out_of_my_way=0x1
+           cs_enforcement_disable=1
+           amfi_allow_any_signature=1
+
+        This requires SIP to ALREADY be disabled (Recovery → csrutil disable).
+        After this command you MUST restart for the change to take effect.
+
+        WARN
+      - sudo nvram boot-args="amfi_get_out_of_my_way=0x1 cs_enforcement_disable=1 amfi_allow_any_signature=1"
+      - echo
+      - echo "boot-args set. Restart now (Apple menu → Restart)."
+      - nvram boot-args
+
+  nvram:revert:
+    desc: 'Remove boot-args (sudo, reboot required after)'
+    cmds:
+      - sudo nvram -d boot-args
+      - echo "boot-args cleared. Re-enable SIP via Recovery, then restart."
+
+  systemextensions:dev-on:
+    desc: Enable System Extensions developer mode (loosens bundle location/sig checks)
+    cmds:
+      - systemextensionsctl developer on
+
+  systemextensions:list:
+    desc: List currently-installed System Extensions
+    cmds:
+      - systemextensionsctl list
+
+  # ───── diagnostics ────────────────────────────────────────────────────────
+
+  doctor:
+    desc: Print a one-shot diagnostic dump for the current Mac
+    cmds:
+      - echo "--- arch & macOS ---"
+      - uname -m
+      - sw_vers
+      - echo
+      - echo "--- SIP ---"
+      - csrutil status
+      - echo
+      - echo "--- boot-args ---"
+      - nvram boot-args 2>&1 || true
+      - echo
+      - echo "--- system-extensions ---"
+      - systemextensionsctl list 2>&1 | head -20 || true
+      - echo
+      - echo "--- /Applications/scdlp.app present? ---"
+      - test -d {{.INSTALLED_APP}} && echo "yes" || echo "no"
+      - echo
+      - echo "--- bin/ binaries ---"
+      - ls -lh bin 2>/dev/null || echo "(none — run task build)"

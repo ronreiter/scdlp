@@ -3,7 +3,8 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DIST="$REPO/dist"
-BUNDLE="$DIST/Scdlp.systemextension"
+BUNDLE="$DIST/io.sentra.scdlp.extension.systemextension"
+EXEC="io.sentra.scdlp.extension"
 
 # Sign identity & team ID come from env. For ad-hoc/dev set:
 #   export SCDLP_SIGN_ID="-"          # ad-hoc; works for SIP-relaxed test only
@@ -13,15 +14,15 @@ TEAM_ID="${SCDLP_TEAM_ID:-UNSIGNED}"
 
 # 1. Build the Go agent with ESF hook enabled. CGO_ENABLED is default on darwin.
 echo "==> building agent binary"
-GOOS=darwin go build -trimpath -o "$DIST/Scdlp" "$REPO/cmd/scdlp-agent"
+GOOS=darwin go build -trimpath -o "$DIST/$EXEC" "$REPO/cmd/scdlp-agent"
 
 # 2. Lay out the bundle.
 echo "==> assembling $BUNDLE"
 rm -rf "$BUNDLE"
 mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/_CodeSignature"
 cp "$REPO/extension/Info.plist" "$BUNDLE/Contents/Info.plist"
-mv "$DIST/Scdlp" "$BUNDLE/Contents/MacOS/Scdlp"
-chmod +x "$BUNDLE/Contents/MacOS/Scdlp"
+mv "$DIST/$EXEC" "$BUNDLE/Contents/MacOS/$EXEC"
+chmod +x "$BUNDLE/Contents/MacOS/$EXEC"
 
 # 3. Sign with the requested identity.
 echo "==> codesigning ($SIGN_ID)"

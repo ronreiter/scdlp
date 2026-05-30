@@ -13,8 +13,14 @@ vars:
   EXT_BUNDLE: '{{.DIST}}/io.sentra.scdlp.extension.systemextension'
   APP_BUNDLE: '{{.DIST}}/scdlp.app'
   INSTALLED_APP: /Applications/scdlp.app
-  SIGN_ID: '{{.SCDLP_SIGN_ID | default "-"}}'
-  TEAM_ID: '{{.SCDLP_TEAM_ID | default "UNSIGNED"}}'
+
+  # Code-signing identity. Defaults to Ron Reiter's Developer ID Application
+  # cert (Team 8BKF8DY7Y4); override per-shell with `export SCDLP_SIGN_ID=…`.
+  # Use SCDLP_SIGN_ID="-" to force an ad-hoc build (no provisioning profile
+  # required; only usable on SIP-relaxed dev Macs).
+  SIGN_ID: '{{.SCDLP_SIGN_ID | default "Developer ID Application: Ron Reiter (8BKF8DY7Y4)"}}'
+  TEAM_ID: '{{.SCDLP_TEAM_ID | default "8BKF8DY7Y4"}}'
+
   RULES_DB: /tmp/scdlp-rules.db
   AUDIT_DB: /tmp/scdlp-audit.db
   SOCKET:   /tmp/scdlp.sock
@@ -110,19 +116,19 @@ tasks:
     deps: [host]
 
   bundle:prod:
-    desc: Build with Developer ID signing; requires SCDLP_SIGN_ID + SCDLP_TEAM_ID
+    desc: Build with Developer ID signing (uses SIGN_ID/TEAM_ID vars; ad-hoc rejected)
     preconditions:
-      - sh: '[ -n "$SCDLP_SIGN_ID" ] && [ "$SCDLP_SIGN_ID" != "-" ]'
-        msg: 'SCDLP_SIGN_ID must be set (e.g. "Developer ID Application: Your Name (TEAMID)")'
-      - sh: '[ -n "$SCDLP_TEAM_ID" ] && [ "$SCDLP_TEAM_ID" != "UNSIGNED" ]'
-        msg: 'SCDLP_TEAM_ID must be set'
+      - sh: '[ "{{.SIGN_ID}}" != "-" ]'
+        msg: 'Refusing to do a prod build with ad-hoc signing. Set SCDLP_SIGN_ID, or remove the override.'
+      - sh: '[ "{{.TEAM_ID}}" != "UNSIGNED" ]'
+        msg: 'TEAM_ID resolved to UNSIGNED. Set SCDLP_TEAM_ID, or remove the override.'
       - sh: '[ -f host/embedded.provisionprofile ]'
         msg: 'host/embedded.provisionprofile missing — download from developer.apple.com'
       - sh: '[ -f extension/embedded.provisionprofile ]'
         msg: 'extension/embedded.provisionprofile missing — download from developer.apple.com'
     cmds:
-      - ./extension/build.sh
-      - ./host/build.sh
+      - SCDLP_SIGN_ID="{{.SIGN_ID}}" SCDLP_TEAM_ID="{{.TEAM_ID}}" ./extension/build.sh
+      - SCDLP_SIGN_ID="{{.SIGN_ID}}" ./host/build.sh
       - |
         echo
         echo "==> verifying production signature"

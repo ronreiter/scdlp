@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/ronreiter/scdlp/internal/agent"
 	"github.com/ronreiter/scdlp/internal/audit"
@@ -105,6 +106,17 @@ func main() {
 		defer eh.Close()
 		h = eh
 		log.Print("hook: EndpointSecurity (subscribed)")
+		// Heartbeat: every 30s log throughput counters so we can see whether
+		// the watchdog is firing (= agent is too slow) or the queue is full.
+		go func() {
+			t := time.NewTicker(30 * time.Second)
+			defer t.Stop()
+			for range t.C {
+				seen, agent, watchdog, full := eh.Stats()
+				log.Printf("esf stats: seen=%d agent=%d watchdog=%d queueFull=%d",
+					seen, agent, watchdog, full)
+			}
+		}()
 	default:
 		log.Fatalf("unknown --hook %q (want mock|esf)", *hookKind)
 	}

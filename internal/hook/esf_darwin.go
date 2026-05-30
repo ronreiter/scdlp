@@ -15,14 +15,28 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
+	"time"
 	"unsafe"
 )
+
+// responseDeadline is the cutoff after which we auto-Allow an event whose
+// decision the agent hasn't returned yet. The kernel kills ES clients that
+// don't respond within ~5 s (ES_AUTH_RESULT_TIMEOUT_DEFAULT); we leave a 2 s
+// safety margin.
+const responseDeadline = 3 * time.Second
 
 type ESFHook struct {
 	c      C.scdlp_es_client_t
 	q      chan pendingESF
 	mu     sync.Mutex
 	closed bool
+
+	// Counters exposed for status/diagnostics.
+	eventsSeen        atomic.Uint64 // queued events (excludes inline-allow-on-full)
+	eventsWatchdog    atomic.Uint64 // events auto-allowed by the watchdog
+	eventsAgentDecided atomic.Uint64 // events decided by the agent loop
+	eventsQueueFull   atomic.Uint64 // events allowed inline because queue was full
 }
 
 type pendingESF struct {
@@ -63,8 +77,13 @@ func (h *ESFHook) Next(ctx context.Context) (Event, DecideFunc, error) {
 		return Event{}, nil, ctx.Err()
 	case p := <-h.q:
 		var once sync.Once
-		decide := func(d Decision) {
+		respond := func(d Decision, fromWatchdog bool) {
 			once.Do(func() {
+				if fromWatchdog {
+					h.eventsWatchdog.Add(1)
+				} else {
+					h.eventsAgentDecided.Add(1)
+				}
 				h.mu.Lock()
 				cli := h.c
 				closed := h.closed
@@ -79,8 +98,26 @@ func (h *ESFHook) Next(ctx context.Context) (Event, DecideFunc, error) {
 				C.scdlp_es_respond(cli, p.cookie, allow)
 			})
 		}
+
+		// Watchdog: kernel kills the client at ~5 s without a response.
+		// If the agent doesn't decide in `responseDeadline`, auto-Allow.
+		// sync.Once makes whichever path fires first the winner.
+		go func() {
+			time.Sleep(responseDeadline)
+			respond(Allow, true)
+		}()
+
+		decide := func(d Decision) { respond(d, false) }
 		return p.ev, decide, nil
 	}
+}
+
+// Stats snapshots the per-counter values for /status reporting.
+func (h *ESFHook) Stats() (seen, agent, watchdog, queueFull uint64) {
+	return h.eventsSeen.Load(),
+		h.eventsAgentDecided.Load(),
+		h.eventsWatchdog.Load(),
+		h.eventsQueueFull.Load()
 }
 
 func (h *ESFHook) Close() error {
@@ -159,7 +196,9 @@ func scdlpGoOnEvent(ev C.scdlp_es_event_t) {
 	}
 	select {
 	case h.q <- p:
+		h.eventsSeen.Add(1)
 	default:
+		h.eventsQueueFull.Add(1)
 		C.scdlp_es_respond(h.c, ev.cookie, 1)
 	}
 }

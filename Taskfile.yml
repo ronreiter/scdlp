@@ -106,8 +106,32 @@ tasks:
       - SCDLP_SIGN_ID="{{.SIGN_ID}}" ./host/build.sh
 
   bundle:
-    desc: 'Alias: build extension + host'
+    desc: 'Alias: build extension + host (ad-hoc by default; honors SCDLP_SIGN_ID)'
     deps: [host]
+
+  bundle:prod:
+    desc: Build with Developer ID signing; requires SCDLP_SIGN_ID + SCDLP_TEAM_ID
+    preconditions:
+      - sh: '[ -n "$SCDLP_SIGN_ID" ] && [ "$SCDLP_SIGN_ID" != "-" ]'
+        msg: 'SCDLP_SIGN_ID must be set (e.g. "Developer ID Application: Your Name (TEAMID)")'
+      - sh: '[ -n "$SCDLP_TEAM_ID" ] && [ "$SCDLP_TEAM_ID" != "UNSIGNED" ]'
+        msg: 'SCDLP_TEAM_ID must be set'
+      - sh: '[ -f host/embedded.provisionprofile ]'
+        msg: 'host/embedded.provisionprofile missing — download from developer.apple.com'
+      - sh: '[ -f extension/embedded.provisionprofile ]'
+        msg: 'extension/embedded.provisionprofile missing — download from developer.apple.com'
+    cmds:
+      - ./extension/build.sh
+      - ./host/build.sh
+      - |
+        echo
+        echo "==> verifying production signature"
+        codesign --verify --deep --strict --verbose=2 dist/scdlp.app 2>&1 | sed 's/^/    /'
+        echo
+        echo "==> entitlements on host:"
+        codesign --display --entitlements - dist/scdlp.app 2>&1 | grep -E '(system-extension|application-identifier|team-identifier)' | sed 's/^/    /' || true
+        echo "==> entitlements on extension:"
+        codesign --display --entitlements - dist/scdlp.app/Contents/Library/SystemExtensions/*.systemextension 2>&1 | grep -E '(endpoint-security|application-identifier|team-identifier)' | sed 's/^/    /' || true
 
   install:
     desc: Copy dist/scdlp.app to /Applications and refresh LaunchServices

@@ -5,3 +5,5 @@
 *.out
 .DS_Store
 docs/signing.md
+host/embedded.provisionprofile
+extension/embedded.provisionprofile

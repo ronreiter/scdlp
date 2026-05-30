@@ -32,16 +32,26 @@ cp "$REPO/host/Info.plist" "$APP/Contents/Info.plist"
 mv "$DIST/scdlp-host" "$APP/Contents/MacOS/scdlp-host"
 chmod +x "$APP/Contents/MacOS/scdlp-host"
 
+# 2b. Embed provisioning profile if present.
+if [[ -f "$REPO/host/embedded.provisionprofile" ]]; then
+    cp "$REPO/host/embedded.provisionprofile" "$APP/Contents/embedded.provisionprofile"
+    echo "==> embedded provisioning profile (host)"
+fi
+
 # 3. Embed the extension.
 cp -R "$EXT_SRC" "$APP/Contents/Library/SystemExtensions/"
 
 # 4. Sign the host (the extension was signed in extension/build.sh).
+TIMESTAMP_FLAG="--timestamp=none"
+if [[ "$SIGN_ID" != "-" ]]; then
+    TIMESTAMP_FLAG="--timestamp"
+fi
 echo "==> codesigning host"
-codesign --force --options runtime --timestamp=none \
+codesign --force --options runtime $TIMESTAMP_FLAG \
     --sign "$SIGN_ID" \
     --entitlements "$REPO/host/Scdlp.entitlements" \
     "$APP/Contents/MacOS/scdlp-host"
-codesign --force --options runtime --timestamp=none \
+codesign --force --options runtime $TIMESTAMP_FLAG \
     --sign "$SIGN_ID" \
     --entitlements "$REPO/host/Scdlp.entitlements" \
     "$APP"

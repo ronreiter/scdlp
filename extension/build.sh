@@ -24,9 +24,20 @@ cp "$REPO/extension/Info.plist" "$BUNDLE/Contents/Info.plist"
 mv "$DIST/$EXEC" "$BUNDLE/Contents/MacOS/$EXEC"
 chmod +x "$BUNDLE/Contents/MacOS/$EXEC"
 
-# 3. Sign with the requested identity.
+# 2b. Embed provisioning profile if present (required for SIP-enabled Macs;
+#     optional in dev mode where the kernel checks are relaxed).
+if [[ -f "$REPO/extension/embedded.provisionprofile" ]]; then
+    cp "$REPO/extension/embedded.provisionprofile" "$BUNDLE/Contents/embedded.provisionprofile"
+    echo "==> embedded provisioning profile"
+fi
+
+# 3. Sign with the requested identity. Use timestamping when not ad-hoc.
+TIMESTAMP_FLAG="--timestamp=none"
+if [[ "$SIGN_ID" != "-" ]]; then
+    TIMESTAMP_FLAG="--timestamp"
+fi
 echo "==> codesigning ($SIGN_ID)"
-codesign --force --options runtime --timestamp=none \
+codesign --force --options runtime $TIMESTAMP_FLAG \
     --sign "$SIGN_ID" \
     --entitlements "$REPO/extension/Scdlp.entitlements" \
     "$BUNDLE"

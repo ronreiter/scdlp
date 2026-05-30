@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -116,6 +117,54 @@ func TestEngine_WriteOnlyFastAllow(t *testing.T) {
 		PID: 1, Flags: os.O_WRONLY})
 	if d != hook.Allow {
 		t.Fatal("write-only opens must short-circuit allow")
+	}
+}
+
+// TestReadFirst4K_DoesNotBlockOnFIFO is a regression test for the ES deadline
+// crash loop. The decision engine runs on a single goroutine; readFirst4K used
+// to call os.Open(O_RDONLY), which blocks indefinitely on a FIFO (or other
+// non-regular file) that has no writer. A single such open() stalls the whole
+// decision loop, so queued AUTH_OPEN events never get answered and the kernel
+// SIGKILLs the ES client for missing its deadline. readFirst4K must never block
+// on a non-regular file.
+func TestReadFirst4K_DoesNotBlockOnFIFO(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "hang.fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo unsupported: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = readFirst4K(fifo) // must return promptly, not block on open()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("readFirst4K blocked on a FIFO with no writer; it must skip non-regular files")
+	}
+}
+
+// TestDecide_DoesNotBlockOnFIFO exercises the same hazard through the public
+// decision path: a process opening a FIFO must get a prompt verdict, never a
+// hang that would blow the ES deadline.
+func TestDecide_DoesNotBlockOnFIFO(t *testing.T) {
+	home := t.TempDir()
+	fifo := filepath.Join(home, "hang.fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo unsupported: %v", err)
+	}
+	eng, _ := tempEngine(t, home, fakeResolver{7: {Exe: "/bin/cat", Chain: []string{"/bin/cat"}}})
+
+	done := make(chan hook.Decision, 1)
+	go func() { done <- eng.Decide(hook.Event{Path: fifo, PID: 7}) }()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Decide blocked opening a FIFO; non-regular files must short-circuit")
 	}
 }
 

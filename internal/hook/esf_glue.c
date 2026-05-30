@@ -2,18 +2,74 @@
 #include <bsm/libbsm.h>
 #include <dispatch/dispatch.h>
 #include <mach/mach.h>
+#include <mach/mach_time.h>
 #include <mach/task.h>
 #include <mach/task_info.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "esf_glue.h"
 
 extern void scdlpGoOnEvent(scdlp_es_event_t ev);
+extern void scdlpGoOnDeadlineDefault(void);
 
 // SCDLP_PATH_BUF is a per-event stack buffer size. Most macOS paths fit in
 // PATH_MAX (1024). On the rare overflow we fall back to malloc.
 #define SCDLP_PATH_BUF 1024
+
+// When the agent has not produced a verdict by the time the safety timer fires,
+// we auto-respond ALLOW. Fail-open is the deliberate choice: a slow/backlogged
+// agent must never brick the machine by silently denying every open(). The
+// security trade-off (an attacker inducing load to slip a read through) is
+// acceptable versus a deadlocked Mac, and is surfaced via the deadline-default
+// counter so it is observable.
+#define SCDLP_DEADLINE_DEFAULT_ALLOW 1
+
+// scdlp_pending_t tracks one in-flight AUTH_OPEN message. Two parties may try
+// to answer it: the Go decision path and the kernel-deadline safety timer.
+// `responded` makes the es_respond_auth_result + es_release_message happen
+// exactly once; `refs` (one per party) frees the struct once both are done.
+typedef struct {
+    es_client_t*  client;
+    es_message_t* msg;
+    atomic_int    responded;
+    atomic_int    refs;
+} scdlp_pending_t;
+
+static uint64_t mach_to_ns(uint64_t mach) {
+    static mach_timebase_info_data_t tb;
+    if (tb.denom == 0) {
+        mach_timebase_info(&tb);
+    }
+    return mach * tb.numer / tb.denom;
+}
+
+static void pending_unref(scdlp_pending_t* p) {
+    if (atomic_fetch_sub(&p->refs, 1) == 1) {
+        free(p);
+    }
+}
+
+// respond_once answers the message at most once. Returns 1 if THIS call was the
+// one that responded, 0 if someone already had. Does not touch refcount.
+static int respond_once(scdlp_pending_t* p, int allow) {
+    if (atomic_exchange(&p->responded, 1) != 0) {
+        return 0;
+    }
+    es_auth_result_t r = allow ? ES_AUTH_RESULT_ALLOW : ES_AUTH_RESULT_DENY;
+    es_respond_auth_result(p->client, p->msg, r, false);
+    es_release_message(p->msg);
+    return 1;
+}
+
+int scdlp_es_respond(uint64_t cookie, int allow) {
+    scdlp_pending_t* p = (scdlp_pending_t*)(uintptr_t)cookie;
+    if (!p) return 0;
+    int won = respond_once(p, allow);
+    pending_unref(p); // the Go decision path is done with this message
+    return won;
+}
 
 scdlp_es_client_t scdlp_es_new_client(int* err_out) {
     es_client_t* client = NULL;
@@ -24,14 +80,27 @@ scdlp_es_client_t scdlp_es_new_client(int* err_out) {
         es_message_t* held = (es_message_t*)m;
         es_retain_message(held);
 
+        scdlp_pending_t* p = (scdlp_pending_t*)malloc(sizeof(scdlp_pending_t));
+        p->client = c;
+        p->msg    = held;
+        atomic_init(&p->responded, 0);
+        atomic_init(&p->refs, 2); // Go decision path + safety timer
+
+        // Response budget = how long the kernel will wait before it SIGKILLs us
+        // for not answering this message. Read it from the message itself rather
+        // than guessing a constant; the budget varies by OS version and load.
+        uint64_t now = mach_absolute_time();
+        uint64_t budget_ns = (m->deadline > now) ? mach_to_ns(m->deadline - now) : 0;
+
         scdlp_es_event_t ev;
-        ev.cookie = (uint64_t)(uintptr_t)held;
-        ev.pid    = audit_token_to_pid(m->process->audit_token);
-        ev.flags  = m->event.open.fflag;
+        ev.cookie      = (uint64_t)(uintptr_t)p;
+        ev.pid         = audit_token_to_pid(m->process->audit_token);
+        ev.flags       = m->event.open.fflag;
+        ev.deadline_ns = budget_ns;
 
         // Path and exe are not NUL-terminated in es_string_token_t — copy
-        // + terminate. Use stack buffers for the common case; malloc only
-        // on rare overlong paths. Avoids ~2 malloc/free pairs per event.
+        // + terminate. Stack buffers for the common case; malloc only on rare
+        // overlong paths.
         char pathStack[SCDLP_PATH_BUF];
         char exeStack[SCDLP_PATH_BUF];
         char* pathBuf;
@@ -59,6 +128,22 @@ scdlp_es_client_t scdlp_es_new_client(int* err_out) {
         memcpy(exeBuf, m->process->executable->path.data, exeLen);
         exeBuf[exeLen] = '\0';
         ev.exe = exeBuf;
+
+        // Arm the safety timer BEFORE handing the event to Go. This closes the
+        // window where an event sits in the Go queue (or the Go loop stalls)
+        // with no deadline protection — the bug that caused the v1.0.x ES
+        // SIGKILL restart loop. Fire at half the budget so the agent normally
+        // wins the race, but the kernel deadline is never missed.
+        uint64_t fire_ns = budget_ns / 2;
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)fire_ns),
+            dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+            ^{
+                if (respond_once(p, SCDLP_DEADLINE_DEFAULT_ALLOW)) {
+                    scdlpGoOnDeadlineDefault();
+                }
+                pending_unref(p);
+            });
 
         scdlpGoOnEvent(ev);
 
@@ -90,7 +175,7 @@ int scdlp_es_mute_path_prefix(scdlp_es_client_t cli, const char* prefix) {
 // process. Without this, reading a file inside the decision engine (e.g.
 // readFirst4K for content-tier classification, or SQLite/log writes) emits
 // new AUTH_OPEN events back to us — a recursive feedback loop that
-// saturates the event queue and trips the 5-second response deadline.
+// saturates the event queue and trips the response deadline.
 int scdlp_es_mute_self(scdlp_es_client_t cli) {
     es_client_t* c = (es_client_t*)cli;
     audit_token_t self_token;
@@ -110,13 +195,4 @@ void scdlp_es_release_client(scdlp_es_client_t cli) {
     es_client_t* c = (es_client_t*)cli;
     es_unsubscribe_all(c);
     es_delete_client(c);
-}
-
-void scdlp_es_respond(scdlp_es_client_t cli, uint64_t cookie, int allow) {
-    es_client_t* c = (es_client_t*)cli;
-    es_message_t* m = (es_message_t*)(uintptr_t)cookie;
-    if (!c || !m) return;
-    es_auth_result_t result = allow ? ES_AUTH_RESULT_ALLOW : ES_AUTH_RESULT_DENY;
-    es_respond_auth_result(c, m, result, false);
-    es_release_message(m);
 }

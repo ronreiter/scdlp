@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -38,7 +39,7 @@ func main() {
 	defaultHome := os.Getenv("HOME")
 	if inSysExt {
 		defaultHook = "esf"
-		defaultSock = ""                // sandbox blocks /tmp socket bind
+		defaultSock = "" // sandbox blocks /tmp socket bind
 		if defaultHome == "" || defaultHome == "/var/root" {
 			defaultHome = consoleUserHome()
 		}
@@ -106,15 +107,27 @@ func main() {
 		defer eh.Close()
 		h = eh
 		log.Print("hook: EndpointSecurity (subscribed)")
-		// Heartbeat: every 30s log throughput counters so we can see whether
-		// the watchdog is firing (= agent is too slow) or the queue is full.
+		// Heartbeat: periodically log throughput + deadline-budget counters so
+		// we can see whether the agent is keeping up, whether the C deadline
+		// timer is having to default events, and how much response headroom the
+		// kernel actually gives us. Interval is short by default so we get at
+		// least one sample even if the process is short-lived; override with
+		// SCDLP_HEARTBEAT_SEC.
+		hbSec := 5
+		if v := os.Getenv("SCDLP_HEARTBEAT_SEC"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				hbSec = n
+			}
+		}
 		go func() {
-			t := time.NewTicker(30 * time.Second)
+			t := time.NewTicker(time.Duration(hbSec) * time.Second)
 			defer t.Stop()
 			for range t.C {
-				seen, agent, watchdog, full := eh.Stats()
-				log.Printf("esf stats: seen=%d agent=%d watchdog=%d queueFull=%d",
-					seen, agent, watchdog, full)
+				s := eh.Stats()
+				log.Printf("esf stats: seen=%d agent=%d deadlineDefault=%d queueFull=%d queue=%d/%d budget(last/min)=%.0f/%.0fms",
+					s.Seen, s.AgentDecided, s.DeadlineDefault, s.QueueFull,
+					s.QueueDepth, s.QueueCap,
+					float64(s.LastDeadlineNs)/1e6, float64(s.MinDeadlineNs)/1e6)
 			}
 		}()
 	default:

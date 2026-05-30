@@ -30,6 +30,20 @@ type Event struct {
 // DecideFunc returns the decision back to the kernel.
 type DecideFunc func(Decision)
 
+// ESFStats is a snapshot of the ESF hook's throughput counters, used by the
+// status backend and the diagnostic heartbeat log. Defined here (not under a
+// build tag) so non-darwin builds can still reference it.
+type ESFStats struct {
+	Seen            uint64
+	AgentDecided    uint64
+	DeadlineDefault uint64
+	QueueFull       uint64
+	LastDeadlineNs  uint64
+	MinDeadlineNs   uint64
+	QueueDepth      int
+	QueueCap        int
+}
+
 // Hook is the contract implemented by both MockHook and (later) the ESF backend.
 type Hook interface {
 	// Next blocks until the next event or ctx is done. Returns the event

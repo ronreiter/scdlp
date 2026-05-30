@@ -17,15 +17,8 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
-	"time"
 	"unsafe"
 )
-
-// responseDeadline is the cutoff after which we auto-Allow an event whose
-// decision the agent hasn't returned yet. The kernel kills ES clients that
-// don't respond within ~5 s (ES_AUTH_RESULT_TIMEOUT_DEFAULT); we leave a 2 s
-// safety margin.
-const responseDeadline = 3 * time.Second
 
 type ESFHook struct {
 	c      C.scdlp_es_client_t
@@ -34,10 +27,16 @@ type ESFHook struct {
 	closed bool
 
 	// Counters exposed for status/diagnostics.
-	eventsSeen        atomic.Uint64 // queued events (excludes inline-allow-on-full)
-	eventsWatchdog    atomic.Uint64 // events auto-allowed by the watchdog
-	eventsAgentDecided atomic.Uint64 // events decided by the agent loop
-	eventsQueueFull   atomic.Uint64 // events allowed inline because queue was full
+	eventsSeen            atomic.Uint64 // queued events (excludes inline-allow-on-full)
+	eventsAgentDecided    atomic.Uint64 // events the agent loop answered
+	eventsDeadlineDefault atomic.Uint64 // events auto-answered by the C deadline timer
+	eventsQueueFull       atomic.Uint64 // events allowed inline because the queue was full
+
+	// Deadline budget instrumentation (nanoseconds). lastDeadlineNs is the most
+	// recent kernel response budget we observed; minDeadlineNs is the tightest.
+	// These tell us how much headroom the kernel actually gives us on this OS.
+	lastDeadlineNs atomic.Uint64
+	minDeadlineNs  atomic.Uint64
 }
 
 type pendingESF struct {
@@ -77,48 +76,40 @@ func (h *ESFHook) Next(ctx context.Context) (Event, DecideFunc, error) {
 	case <-ctx.Done():
 		return Event{}, nil, ctx.Err()
 	case p := <-h.q:
+		// The C layer owns the kernel-deadline guarantee (a per-message safety
+		// timer armed at receipt), so the agent no longer needs its own
+		// watchdog. We only have to deliver the verdict; scdlp_es_respond is
+		// idempotent, so if the timer already fired this is a harmless no-op.
 		var once sync.Once
-		respond := func(d Decision, fromWatchdog bool) {
+		decide := func(d Decision) {
 			once.Do(func() {
-				if fromWatchdog {
-					h.eventsWatchdog.Add(1)
-				} else {
-					h.eventsAgentDecided.Add(1)
-				}
-				h.mu.Lock()
-				cli := h.c
-				closed := h.closed
-				h.mu.Unlock()
-				if closed || cli == nil {
-					return
-				}
 				allow := C.int(0)
 				if d == Allow {
 					allow = 1
 				}
-				C.scdlp_es_respond(cli, p.cookie, allow)
+				// Only count it as agent-decided if we actually beat the
+				// safety timer; otherwise the timer already defaulted it.
+				if C.scdlp_es_respond(p.cookie, allow) != 0 {
+					h.eventsAgentDecided.Add(1)
+				}
 			})
 		}
-
-		// Watchdog: kernel kills the client at ~5 s without a response.
-		// If the agent doesn't decide in `responseDeadline`, auto-Allow.
-		// sync.Once makes whichever path fires first the winner.
-		go func() {
-			time.Sleep(responseDeadline)
-			respond(Allow, true)
-		}()
-
-		decide := func(d Decision) { respond(d, false) }
 		return p.ev, decide, nil
 	}
 }
 
 // Stats snapshots the per-counter values for /status reporting.
-func (h *ESFHook) Stats() (seen, agent, watchdog, queueFull uint64) {
-	return h.eventsSeen.Load(),
-		h.eventsAgentDecided.Load(),
-		h.eventsWatchdog.Load(),
-		h.eventsQueueFull.Load()
+func (h *ESFHook) Stats() ESFStats {
+	return ESFStats{
+		Seen:            h.eventsSeen.Load(),
+		AgentDecided:    h.eventsAgentDecided.Load(),
+		DeadlineDefault: h.eventsDeadlineDefault.Load(),
+		QueueFull:       h.eventsQueueFull.Load(),
+		LastDeadlineNs:  h.lastDeadlineNs.Load(),
+		MinDeadlineNs:   h.minDeadlineNs.Load(),
+		QueueDepth:      len(h.q),
+		QueueCap:        cap(h.q),
+	}
 }
 
 func (h *ESFHook) Close() error {
@@ -145,12 +136,8 @@ func (h *ESFHook) Close() error {
 func (h *ESFHook) applyDefaultMutes() {
 	// First: mute our own process. Without this, every file the engine
 	// reads (SQLite WAL, extension.log, classifier readFirst4K) generates
-	// AUTH_OPEN events we have to respond to, recursively. That's what
-	// killed us in v1.0.1 — the queue saturated and the kernel timed us
-	// out at the 5 s deadline.
+	// AUTH_OPEN events we have to respond to, recursively.
 	if rc := C.scdlp_es_mute_self(h.c); rc != 0 {
-		// Non-fatal: the watchdog will keep us alive but the agent will
-		// be much busier than it should be.
 		log.Printf("WARN: scdlp_es_mute_self failed; self-event recursion will saturate the queue")
 	} else {
 		log.Print("muted self process")
@@ -210,6 +197,7 @@ func scdlpGoOnEvent(ev C.scdlp_es_event_t) {
 	if h == nil {
 		return
 	}
+	h.recordDeadline(uint64(ev.deadline_ns))
 	p := pendingESF{
 		ev: Event{
 			Path:  C.GoString(ev.path),
@@ -223,7 +211,36 @@ func scdlpGoOnEvent(ev C.scdlp_es_event_t) {
 	case h.q <- p:
 		h.eventsSeen.Add(1)
 	default:
+		// Queue saturated: answer inline so we never block the ES callback
+		// thread. The C safety timer for this message becomes a no-op.
 		h.eventsQueueFull.Add(1)
-		C.scdlp_es_respond(h.c, ev.cookie, 1)
+		C.scdlp_es_respond(ev.cookie, 1)
+	}
+}
+
+//export scdlpGoOnDeadlineDefault
+func scdlpGoOnDeadlineDefault() {
+	activeMu.RLock()
+	h := active
+	activeMu.RUnlock()
+	if h != nil {
+		h.eventsDeadlineDefault.Add(1)
+	}
+}
+
+// recordDeadline tracks the last and minimum observed kernel response budgets.
+func (h *ESFHook) recordDeadline(ns uint64) {
+	if ns == 0 {
+		return
+	}
+	h.lastDeadlineNs.Store(ns)
+	for {
+		cur := h.minDeadlineNs.Load()
+		if cur != 0 && cur <= ns {
+			return
+		}
+		if h.minDeadlineNs.CompareAndSwap(cur, ns) {
+			return
+		}
 	}
 }

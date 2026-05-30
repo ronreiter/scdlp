@@ -14,6 +14,7 @@ import "C"
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -142,12 +143,36 @@ func (h *ESFHook) Close() error {
 }
 
 func (h *ESFHook) applyDefaultMutes() {
+	// First: mute our own process. Without this, every file the engine
+	// reads (SQLite WAL, extension.log, classifier readFirst4K) generates
+	// AUTH_OPEN events we have to respond to, recursively. That's what
+	// killed us in v1.0.1 — the queue saturated and the kernel timed us
+	// out at the 5 s deadline.
+	if rc := C.scdlp_es_mute_self(h.c); rc != 0 {
+		// Non-fatal: the watchdog will keep us alive but the agent will
+		// be much busier than it should be.
+		log.Printf("WARN: scdlp_es_mute_self failed; self-event recursion will saturate the queue")
+	} else {
+		log.Print("muted self process")
+	}
+
+	// Second: prefix-mute high-volume directories that are never sensitive
+	// secret stores. These cut event volume by an order of magnitude.
 	prefixes := []string{
 		"/System/",
-		"/usr/share/",
-		"/Library/Caches/com.apple.",
+		"/usr/",
+		"/Library/Caches/",
+		"/Library/Apple/",
+		"/Library/Frameworks/",
+		"/Library/PrivateFrameworks/",
+		"/Library/Logs/",
 		"/private/var/folders/",
+		"/private/var/db/",
+		"/private/tmp/",
 		"/dev/",
+		"/Applications/", // includes /Applications/*.app/Contents/...
+		"/opt/homebrew/",
+		"/opt/local/",
 	}
 	for _, p := range prefixes {
 		cp := C.CString(p)

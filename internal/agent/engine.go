@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -41,6 +42,8 @@ type Engine struct {
 	cfg     Config
 	matcher *pathrules.Matcher
 	classif *classify.Classifier
+
+	auditCh chan audit.Event // 256-deep; full = drop with counter increment
 }
 
 func New(cfg Config) *Engine {
@@ -50,21 +53,59 @@ func New(cfg Config) *Engine {
 	if cfg.Logger == nil {
 		cfg.Logger = log.New(os.Stderr, "agent: ", log.LstdFlags|log.Lmicroseconds)
 	}
-	return &Engine{
+	e := &Engine{
 		cfg:     cfg,
 		matcher: pathrules.NewWithDefaults(cfg.Homes),
 		classif: classify.New(),
+		auditCh: make(chan audit.Event, 256),
+	}
+	// Background audit writer. Keeps SQLite INSERTs off the decision path
+	// — otherwise a slow audit IO could push us past the ES deadline.
+	go e.auditWriter()
+	return e
+}
+
+func (e *Engine) auditWriter() {
+	defer func() {
+		if r := recover(); r != nil {
+			e.cfg.Logger.Printf("PANIC in auditWriter: %v\n%s", r, debug.Stack())
+			// Restart so audit logging keeps working.
+			go e.auditWriter()
+		}
+	}()
+	for ev := range e.auditCh {
+		if err := e.cfg.Audit.Log(ev); err != nil {
+			e.cfg.Logger.Printf("audit log: %v", err)
+		}
 	}
 }
 
-func (e *Engine) Decide(ev hook.Event) hook.Decision {
+func (e *Engine) Decide(ev hook.Event) (verdict hook.Decision) {
+	// Per-event panic recovery. Decide is on the hot path; any panic here
+	// would crash the entire process, which under sysextd means the
+	// extension thrashes in a restart loop. Allow-on-panic is the safer
+	// fail mode than crash-out (kernel would auto-deny by deadline anyway).
+	defer func() {
+		if r := recover(); r != nil {
+			e.cfg.Logger.Printf("PANIC in Decide path=%q pid=%d: %v\n%s",
+				ev.Path, ev.PID, r, debug.Stack())
+			verdict = hook.Allow
+		}
+	}()
+
 	start := time.Now()
-	verdict, audited := e.decideInner(ev)
+	v, audited := e.decideInner(ev)
+	verdict = v
 	dur := time.Since(start).Microseconds()
 	if audited != nil {
 		audited.DurationUs = dur
-		if err := e.cfg.Audit.Log(*audited); err != nil {
-			e.cfg.Logger.Printf("audit log: %v", err)
+		// Push audit row to the background writer. If the channel is full,
+		// drop the row rather than block the decision path — losing an
+		// audit entry is strictly better than missing the ES deadline.
+		select {
+		case e.auditCh <- *audited:
+		default:
+			// TODO: counter for dropped audit rows; surface in status.
 		}
 	}
 	return verdict
@@ -80,7 +121,13 @@ func (e *Engine) decideInner(ev hook.Event) (hook.Decision, *audit.Event) {
 	matchedKind := category
 	contentMatch := ""
 	if !matched {
-		if buf, ok := readFirst4K(ev.Path); ok {
+		buf, err := readFirst4K(ev.Path)
+		if err != nil {
+			// Silently dropped before; now surface as warning so we can
+			// see when sandbox/TCC denies reads we expected to succeed.
+			e.cfg.Logger.Printf("readFirst4K %q: %v", ev.Path, err)
+		}
+		if buf != nil {
 			v := e.classif.ClassifyBuf(buf)
 			if v.IsSecret() {
 				matched = true
@@ -155,6 +202,16 @@ func (e *Engine) decideInner(ev hook.Event) (hook.Decision, *audit.Event) {
 }
 
 func (e *Engine) Run(ctx context.Context, h hook.Hook) {
+	// Outer recover: if anything bubbles up past Decide's per-event
+	// recover (e.g. a panic in h.Next or in the hook callback we hand
+	// back), restart the loop instead of crashing the process.
+	defer func() {
+		if r := recover(); r != nil {
+			e.cfg.Logger.Printf("PANIC in Run loop: %v\n%s", r, debug.Stack())
+			// Restart the loop from a fresh goroutine.
+			go e.Run(ctx, h)
+		}
+	}()
 	for {
 		ev, decide, err := h.Next(ctx)
 		if err != nil {
@@ -168,18 +225,21 @@ func (e *Engine) Run(ctx context.Context, h hook.Hook) {
 	}
 }
 
-func readFirst4K(path string) ([]byte, bool) {
+// readFirst4K returns the first 4 KiB of path. Returns (nil, err) on open
+// failures (sandbox denials, missing file, permission); (buf, nil) when
+// readable. EOF before 4 KiB is normal and returns the partial buffer.
+func readFirst4K(path string) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 	defer f.Close()
 	buf := make([]byte, 4096)
 	n, err := io.ReadFull(f, buf)
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-		return nil, false
+		return nil, err
 	}
-	return buf[:n], true
+	return buf[:n], nil
 }
 
 func ifEmpty(a, b string) string {

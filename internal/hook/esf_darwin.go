@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -25,12 +26,14 @@ type ESFHook struct {
 	q      chan pendingESF
 	mu     sync.Mutex
 	closed bool
+	trace  bool // SCDLP_TRACE=1: log every event (path+budget) for diagnostics
 
 	// Counters exposed for status/diagnostics.
 	eventsSeen            atomic.Uint64 // queued events (excludes inline-allow-on-full)
 	eventsAgentDecided    atomic.Uint64 // events the agent loop answered
 	eventsDeadlineDefault atomic.Uint64 // events auto-answered by the C deadline timer
 	eventsQueueFull       atomic.Uint64 // events allowed inline because the queue was full
+	eventsRespondError    atomic.Uint64 // es_respond_flags_result returned non-success
 
 	// Deadline budget instrumentation (nanoseconds). lastDeadlineNs is the most
 	// recent kernel response budget we observed; minDeadlineNs is the tightest.
@@ -63,8 +66,9 @@ func NewESFHook() (*ESFHook, error) {
 	}
 
 	h := &ESFHook{
-		c: cli,
-		q: make(chan pendingESF, 256),
+		c:     cli,
+		q:     make(chan pendingESF, 256),
+		trace: os.Getenv("SCDLP_TRACE") == "1", // dev aid: log every event
 	}
 	active = h
 	h.applyDefaultMutes()
@@ -105,6 +109,7 @@ func (h *ESFHook) Stats() ESFStats {
 		AgentDecided:    h.eventsAgentDecided.Load(),
 		DeadlineDefault: h.eventsDeadlineDefault.Load(),
 		QueueFull:       h.eventsQueueFull.Load(),
+		RespondError:    h.eventsRespondError.Load(),
 		LastDeadlineNs:  h.lastDeadlineNs.Load(),
 		MinDeadlineNs:   h.minDeadlineNs.Load(),
 		QueueDepth:      len(h.q),
@@ -168,22 +173,31 @@ func (h *ESFHook) applyDefaultMutes() {
 	}
 }
 
+// esErrString maps es_new_client_result_t (ESTypes.h) to a human string.
+// The values must match the SDK enum order exactly:
+//
+//	0 SUCCESS, 1 ERR_INVALID_ARGUMENT, 2 ERR_INTERNAL, 3 ERR_NOT_ENTITLED,
+//	4 ERR_NOT_PERMITTED, 5 ERR_NOT_PRIVILEGED, 6 ERR_TOO_MANY_CLIENTS
+//
+// (-1 is our own sentinel for an es_subscribe failure.)
 func esErrString(code int) string {
 	switch code {
 	case 0:
 		return "success"
 	case 1:
-		return "not entitled (need com.apple.developer.endpoint-security.client)"
+		return "invalid argument"
 	case 2:
 		return "internal ES error"
 	case 3:
-		return "not permitted (grant Full Disk Access)"
+		return "not entitled (need com.apple.developer.endpoint-security.client)"
 	case 4:
-		return "invalid argument"
+		return "not permitted (grant Full Disk Access in System Settings → Privacy & Security)"
 	case 5:
-		return "not privileged (run as root)"
+		return "not privileged (must run as root)"
 	case 6:
-		return "TCC denied"
+		return "too many ES clients"
+	case -1:
+		return "es_subscribe failed"
 	default:
 		return fmt.Sprintf("unknown ES error %d", code)
 	}
@@ -198,6 +212,10 @@ func scdlpGoOnEvent(ev C.scdlp_es_event_t) {
 		return
 	}
 	h.recordDeadline(uint64(ev.deadline_ns))
+	if h.trace {
+		log.Printf("evt path=%s pid=%d budget=%.0fms", C.GoString(ev.path), int(ev.pid),
+			float64(uint64(ev.deadline_ns))/1e6)
+	}
 	p := pendingESF{
 		ev: Event{
 			Path:  C.GoString(ev.path),
@@ -226,6 +244,17 @@ func scdlpGoOnDeadlineDefault() {
 	if h != nil {
 		h.eventsDeadlineDefault.Add(1)
 	}
+}
+
+//export scdlpGoOnRespondError
+func scdlpGoOnRespondError(rc C.int) {
+	activeMu.RLock()
+	h := active
+	activeMu.RUnlock()
+	if h != nil {
+		h.eventsRespondError.Add(1)
+	}
+	log.Printf("WARN: es_respond_auth_result rejected our verdict rc=%d (kernel considers the message unanswered)", int(rc))
 }
 
 // recordDeadline tracks the last and minimum observed kernel response budgets.

@@ -38,6 +38,7 @@ type ESFStats struct {
 	AgentDecided    uint64
 	DeadlineDefault uint64
 	QueueFull       uint64
+	RespondError    uint64
 	LastDeadlineNs  uint64
 	MinDeadlineNs   uint64
 	QueueDepth      int

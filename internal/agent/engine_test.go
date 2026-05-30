@@ -110,6 +110,46 @@ func TestEngine_ProtectedWithAllowRule(t *testing.T) {
 	}
 }
 
+func TestEngine_MonitorOnly_AllowsButStillPrompts(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".aws"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	creds := filepath.Join(home, ".aws/credentials")
+	if err := os.WriteFile(creds, []byte("[default]\naws_access_key_id=AKIAIOSFODNN7EXAMPLE\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	rdb, err := rules.Open(filepath.Join(dir, "rules.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { rdb.Close() })
+	adb, err := audit.Open(filepath.Join(dir, "audit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { adb.Close() })
+	bus := NewPromptBus(8)
+	eng := New(Config{
+		Homes: []string{home}, Rules: rdb, Audit: adb, Bus: bus,
+		Resolver:    fakeResolver{42: {Exe: "/usr/bin/node", Chain: []string{"/usr/bin/node"}}},
+		MonitorOnly: true,
+	})
+
+	// In enforce mode this unknown read would be denied; monitor-only must allow.
+	if got := eng.Decide(hook.Event{Path: creds, PID: 42}); got != hook.Allow {
+		t.Fatalf("monitor-only must allow, got %v", got)
+	}
+	// …but it must still surface the decision on the prompt bus.
+	select {
+	case <-bus.C():
+	case <-time.After(time.Second):
+		t.Fatal("monitor-only must still publish a prompt event")
+	}
+}
+
 func TestEngine_WriteOnlyFastAllow(t *testing.T) {
 	home := t.TempDir()
 	eng, _ := tempEngine(t, home, fakeResolver{1: {Exe: "/bin/cat"}})

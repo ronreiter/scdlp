@@ -9,9 +9,9 @@
     <key>CFBundleDisplayName</key>
     <string>scdlp Endpoint Security Extension</string>
     <key>CFBundleVersion</key>
-    <string>5</string>
+    <string>10</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.4</string>
+    <string>1.0.9</string>
     <key>CFBundleExecutable</key>
     <string>io.sentra.scdlp.extension</string>
     <key>CFBundlePackageType</key>

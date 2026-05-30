@@ -17,4 +17,6 @@ func (*ESFHook) Next(ctx context.Context) (Event, DecideFunc, error) {
 	return Event{}, nil, errors.New("ESF hook is darwin-only")
 }
 
+func (*ESFHook) Stats() ESFStats { return ESFStats{} }
+
 func (*ESFHook) Close() error { return nil }

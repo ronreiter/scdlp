@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ronreiter/scdlp/internal/audit"
@@ -229,11 +230,27 @@ func (e *Engine) Run(ctx context.Context, h hook.Hook) {
 // failures (sandbox denials, missing file, permission); (buf, nil) when
 // readable. EOF before 4 KiB is normal and returns the partial buffer.
 func readFirst4K(path string) ([]byte, error) {
-	f, err := os.Open(path)
+	// O_NONBLOCK so opening a FIFO/device with no peer cannot block the
+	// (single-threaded) decision path. A stalled open() would let queued
+	// AUTH_OPEN events miss the kernel's response deadline and get the whole
+	// ES client SIGKILLed — the v1.0.x restart loop.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+
+	// Only regular files hold credentials worth classifying. FIFOs, devices,
+	// sockets, and directories are never secret stores, and reading them can
+	// block or trigger side effects — skip them (treated as non-secret).
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, nil
+	}
+
 	buf := make([]byte, 4096)
 	n, err := io.ReadFull(f, buf)
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {

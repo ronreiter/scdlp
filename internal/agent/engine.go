@@ -37,6 +37,11 @@ type Config struct {
 	Resolver Resolver
 	Bus      *PromptBus
 	Logger   *log.Logger
+
+	// MonitorOnly: classify, audit, and publish prompt events as normal, but
+	// never return Deny — unknown reads are allowed through instead of blocked
+	// with EACCES. Safe default until the user-facing approval prompt exists.
+	MonitorOnly bool
 }
 
 type Engine struct {
@@ -97,6 +102,12 @@ func (e *Engine) Decide(ev hook.Event) (verdict hook.Decision) {
 	start := time.Now()
 	v, audited := e.decideInner(ev)
 	verdict = v
+	// Monitor-only: surface what we *would* have done (audit row + prompt event
+	// keep the real verdict) but never actually block the open.
+	if e.cfg.MonitorOnly && verdict == hook.Deny {
+		e.cfg.Logger.Printf("MONITOR would-deny path=%q pid=%d (allowed: monitor-only)", ev.Path, ev.PID)
+		verdict = hook.Allow
+	}
 	dur := time.Since(start).Microseconds()
 	if audited != nil {
 		audited.DurationUs = dur

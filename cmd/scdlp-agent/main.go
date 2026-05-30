@@ -50,6 +50,11 @@ func main() {
 	sockPath := flag.String("socket", defaultSock, "IPC socket path (empty = disabled)")
 	home := flag.String("home", defaultHome, "user home dir for path-rule expansion")
 	hookKind := flag.String("hook", defaultHook, "event source: mock | esf")
+	// Monitor-only is the safe default until the user-facing approval prompt
+	// exists: every decision is classified, audited, and published to the
+	// prompt bus, but nothing is ever denied (unknown reads are allowed, not
+	// blocked with EACCES). Pass --monitor=false to actually enforce.
+	monitorOnly := flag.Bool("monitor", true, "monitor-only: log/audit decisions but never deny")
 	flag.Parse()
 
 	if err := os.MkdirAll(filepath.Dir(*rulesPath), 0o750); err != nil {
@@ -79,7 +84,15 @@ func main() {
 	bus := agent.NewPromptBus(64)
 	eng := agent.New(agent.Config{
 		Homes: []string{*home}, Rules: r, Audit: a, Bus: bus,
+		MonitorOnly: *monitorOnly,
+		// Use the process logger (redirected to extension.log under sysextd)
+		// rather than the engine's stderr default, which sysextd discards —
+		// otherwise decision/monitor/panic logs would be invisible.
+		Logger: log.Default(),
 	})
+	if *monitorOnly {
+		log.Print("monitor-only mode: decisions are logged/audited but never enforced")
+	}
 
 	if *sockPath != "" {
 		be := newBackend(r, a)
@@ -124,8 +137,8 @@ func main() {
 			defer t.Stop()
 			for range t.C {
 				s := eh.Stats()
-				log.Printf("esf stats: seen=%d agent=%d deadlineDefault=%d queueFull=%d queue=%d/%d budget(last/min)=%.0f/%.0fms",
-					s.Seen, s.AgentDecided, s.DeadlineDefault, s.QueueFull,
+				log.Printf("esf stats: seen=%d agent=%d deadlineDefault=%d queueFull=%d respondErr=%d queue=%d/%d budget(last/min)=%.0f/%.0fms",
+					s.Seen, s.AgentDecided, s.DeadlineDefault, s.QueueFull, s.RespondError,
 					s.QueueDepth, s.QueueCap,
 					float64(s.LastDeadlineNs)/1e6, float64(s.MinDeadlineNs)/1e6)
 			}

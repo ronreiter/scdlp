@@ -13,6 +13,7 @@
 
 extern void scdlpGoOnEvent(scdlp_es_event_t ev);
 extern void scdlpGoOnDeadlineDefault(void);
+extern void scdlpGoOnRespondError(int rc);
 
 // SCDLP_PATH_BUF is a per-event stack buffer size. Most macOS paths fit in
 // PATH_MAX (1024). On the rare overflow we fall back to malloc.
@@ -21,15 +22,13 @@ extern void scdlpGoOnDeadlineDefault(void);
 // When the agent has not produced a verdict by the time the safety timer fires,
 // we auto-respond ALLOW. Fail-open is the deliberate choice: a slow/backlogged
 // agent must never brick the machine by silently denying every open(). The
-// security trade-off (an attacker inducing load to slip a read through) is
-// acceptable versus a deadlocked Mac, and is surfaced via the deadline-default
-// counter so it is observable.
+// trade-off is surfaced via the deadline-default counter so it is observable.
 #define SCDLP_DEADLINE_DEFAULT_ALLOW 1
 
 // scdlp_pending_t tracks one in-flight AUTH_OPEN message. Two parties may try
 // to answer it: the Go decision path and the kernel-deadline safety timer.
-// `responded` makes the es_respond_auth_result + es_release_message happen
-// exactly once; `refs` (one per party) frees the struct once both are done.
+// `responded` makes the es_respond + es_release_message happen exactly once;
+// `refs` (one per party) frees the struct once both are done.
 typedef struct {
     es_client_t*  client;
     es_message_t* msg;
@@ -53,12 +52,21 @@ static void pending_unref(scdlp_pending_t* p) {
 
 // respond_once answers the message at most once. Returns 1 if THIS call was the
 // one that responded, 0 if someone already had. Does not touch refcount.
+//
+// AUTH_OPEN is a *flags* event and MUST be answered with es_respond_flags_result
+// — es_respond_auth_result returns ERR_EVENT_TYPE and the kernel treats the
+// message as unanswered, eventually SIGKILLing the client for a missed deadline
+// (this was the v1.0.x crash/freeze loop). authorized_flags = 0xFFFFFFFF
+// authorizes all requested open flags (allow); 0 authorizes none (deny).
 static int respond_once(scdlp_pending_t* p, int allow) {
     if (atomic_exchange(&p->responded, 1) != 0) {
         return 0;
     }
-    es_auth_result_t r = allow ? ES_AUTH_RESULT_ALLOW : ES_AUTH_RESULT_DENY;
-    es_respond_auth_result(p->client, p->msg, r, false);
+    uint32_t authorized_flags = allow ? 0xFFFFFFFF : 0;
+    es_respond_result_t rr = es_respond_flags_result(p->client, p->msg, authorized_flags, false);
+    if (rr != ES_RESPOND_RESULT_SUCCESS) {
+        scdlpGoOnRespondError((int)rr);
+    }
     es_release_message(p->msg);
     return 1;
 }
@@ -73,6 +81,7 @@ int scdlp_es_respond(uint64_t cookie, int allow) {
 
 scdlp_es_client_t scdlp_es_new_client(int* err_out) {
     es_client_t* client = NULL;
+
     es_new_client_result_t r = es_new_client(&client, ^(es_client_t* c, const es_message_t* m) {
         if (m->event_type != ES_EVENT_TYPE_AUTH_OPEN) {
             return;
@@ -131,9 +140,8 @@ scdlp_es_client_t scdlp_es_new_client(int* err_out) {
 
         // Arm the safety timer BEFORE handing the event to Go. This closes the
         // window where an event sits in the Go queue (or the Go loop stalls)
-        // with no deadline protection — the bug that caused the v1.0.x ES
-        // SIGKILL restart loop. Fire at half the budget so the agent normally
-        // wins the race, but the kernel deadline is never missed.
+        // with no deadline protection. Fire at half the budget so the agent
+        // normally wins the race, but the kernel deadline is never missed.
         uint64_t fire_ns = budget_ns / 2;
         dispatch_after(
             dispatch_time(DISPATCH_TIME_NOW, (int64_t)fire_ns),

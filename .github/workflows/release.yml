@@ -1,0 +1,156 @@
+# Build, sign, notarize, and release a Developer ID-signed scdlp.dmg on
+# every push to main. The resulting artifact is downloadable at:
+#
+#   https://github.com/ronreiter/scdlp/releases/latest/download/scdlp.dmg
+#
+# Required GitHub Actions secrets (Settings → Secrets and variables → Actions):
+#
+#   APPLE_DEVELOPER_ID_CERT_P12        base64 of the Developer ID Application cert + private key
+#                                      (export from Keychain Access as .p12, then `base64 -i cert.p12`)
+#   APPLE_DEVELOPER_ID_CERT_PASSWORD   passphrase you set when exporting the .p12
+#   APPLE_KEYCHAIN_PASSWORD            any string; used only to lock the throwaway CI keychain
+#   APPLE_HOST_PROFILE                 base64 of host/embedded.provisionprofile
+#   APPLE_EXT_PROFILE                  base64 of extension/embedded.provisionprofile
+#   APPLE_ID                           your Apple ID email
+#   APPLE_TEAM_ID                      8BKF8DY7Y4
+#   APPLE_APP_SPECIFIC_PASSWORD        app-specific password generated at appleid.apple.com
+#
+# Once these are set, every push to main produces a release.
+
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create releases
+
+jobs:
+  build-and-release:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/Library/Caches/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: ${{ runner.os }}-go-
+
+      - name: Unit + integration tests
+        run: go test ./...
+
+      - name: Decode signing assets
+        env:
+          CERT_P12: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 }}
+          HOST_PROFILE: ${{ secrets.APPLE_HOST_PROFILE }}
+          EXT_PROFILE: ${{ secrets.APPLE_EXT_PROFILE }}
+        run: |
+          echo "$CERT_P12"     | base64 --decode > $RUNNER_TEMP/cert.p12
+          echo "$HOST_PROFILE" | base64 --decode > host/embedded.provisionprofile
+          echo "$EXT_PROFILE"  | base64 --decode > extension/embedded.provisionprofile
+
+      - name: Set up ephemeral keychain
+        env:
+          KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+          CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
+        run: |
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain  -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -lut 21600 build.keychain
+          security import "$RUNNER_TEMP/cert.p12" \
+              -k build.keychain \
+              -P "$CERT_PASSWORD" \
+              -T /usr/bin/codesign \
+              -T /usr/bin/security
+          security set-key-partition-list \
+              -S apple-tool:,apple:,codesign: \
+              -s -k "$KEYCHAIN_PASSWORD" \
+              build.keychain
+          security find-identity -v -p codesigning build.keychain
+
+      - name: Install go-task
+        run: brew install go-task
+
+      - name: Build signed bundle
+        env:
+          SCDLP_SIGN_ID: 'Developer ID Application: Ron Reiter (8BKF8DY7Y4)'
+          SCDLP_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: task bundle:prod
+
+      - name: Notarize
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APP_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          # notarytool wants a zip of the .app; we'll wrap dist/scdlp.app
+          ditto -c -k --keepParent dist/scdlp.app dist/scdlp.zip
+          xcrun notarytool submit dist/scdlp.zip \
+              --apple-id "$APPLE_ID" \
+              --team-id "$TEAM_ID" \
+              --password "$APP_PASSWORD" \
+              --wait
+          xcrun stapler staple dist/scdlp.app
+          xcrun stapler validate dist/scdlp.app
+
+      - name: Package .dmg
+        run: |
+          # Stage the .app + a symlink to /Applications inside the .dmg
+          STAGE="$RUNNER_TEMP/dmg-stage"
+          mkdir -p "$STAGE"
+          cp -R dist/scdlp.app "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname scdlp \
+              -srcfolder "$STAGE" \
+              -ov -format UDZO \
+              dist/scdlp.dmg
+          # Sign the .dmg itself so Gatekeeper accepts the wrapper, then
+          # notarize + staple the dmg.
+          codesign --sign "Developer ID Application: Ron Reiter (8BKF8DY7Y4)" \
+              --timestamp dist/scdlp.dmg
+          xcrun notarytool submit dist/scdlp.dmg \
+              --apple-id "${{ secrets.APPLE_ID }}" \
+              --team-id "${{ secrets.APPLE_TEAM_ID }}" \
+              --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
+              --wait
+          xcrun stapler staple dist/scdlp.dmg
+
+      - name: Compute version
+        id: ver
+        run: |
+          v=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" extension/Info.plist)
+          b=$(/usr/libexec/PlistBuddy -c "Print CFBundleVersion" extension/Info.plist)
+          short=$(git rev-parse --short HEAD)
+          echo "tag=v${v}-${b}+${short}" >> "$GITHUB_OUTPUT"
+          echo "name=scdlp v${v} (build ${b})" >> "$GITHUB_OUTPUT"
+
+      - name: Create / update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Delete any prior 'latest' release so the latest-download URL
+          # always points at this build.
+          gh release delete latest -y --cleanup-tag 2>/dev/null || true
+          gh release create latest dist/scdlp.dmg \
+              --title "${{ steps.ver.outputs.name }}" \
+              --notes "Auto-built from ${GITHUB_SHA::7} on $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # Also create an immutable versioned release for history.
+          gh release create "${{ steps.ver.outputs.tag }}" dist/scdlp.dmg \
+              --title "${{ steps.ver.outputs.name }}" \
+              --notes "Auto-built from ${GITHUB_SHA::7}" || true
+
+      - name: Clean up keychain
+        if: always()
+        run: security delete-keychain build.keychain || true

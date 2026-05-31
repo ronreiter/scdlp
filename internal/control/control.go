@@ -21,8 +21,12 @@ import (
 	"github.com/ronreiter/scdlp/internal/rules"
 )
 
-// PolicyApplier swaps the engine's live policy (implemented by *agent.Engine).
-type PolicyApplier interface{ SetPolicy(config.Config) }
+// PolicyApplier controls the engine (implemented by *agent.Engine): swap the
+// live policy and toggle enforcement (the kill switch).
+type PolicyApplier interface {
+	SetPolicy(config.Config)
+	SetEnabled(bool)
+}
 
 // RuleRevoker removes a rule by id (implemented by *rules.Store).
 type RuleRevoker interface{ Revoke(int64) error }
@@ -44,6 +48,7 @@ type Controller struct {
 	ruleSrc     RuleLister
 	log         *log.Logger
 	lastMod     time.Time
+	lastEnabled bool
 }
 
 // New creates the control + commands dirs (world-writable so the user-session
@@ -58,12 +63,31 @@ func New(dir string, initial config.Config, applier PolicyApplier, revoker RuleR
 	}
 	_ = os.Chmod(dir, 0o777)
 	_ = os.Chmod(cmdDir, 0o777)
-	c := &Controller{dir: dir, cmdDir: cmdDir, applier: applier, revoker: revoker, log: logger}
+	c := &Controller{dir: dir, cmdDir: cmdDir, applier: applier, revoker: revoker, log: logger, lastEnabled: true}
 	c.seedPolicy(initial)
+	c.SyncEnabled() // apply initial on/off state from the disabled marker
 	return c, nil
 }
 
-func (c *Controller) policyPath() string { return filepath.Join(c.dir, "policy.json") }
+func (c *Controller) policyPath() string   { return filepath.Join(c.dir, "policy.json") }
+func (c *Controller) disabledPath() string { return filepath.Join(c.dir, "disabled") }
+
+// SyncEnabled toggles enforcement to match the presence of the "disabled"
+// marker file (the menu-bar kill switch creates/removes it).
+func (c *Controller) SyncEnabled() {
+	_, err := os.Stat(c.disabledPath())
+	enabled := os.IsNotExist(err) // marker present ⇒ disabled
+	if enabled == c.lastEnabled {
+		return
+	}
+	c.lastEnabled = enabled
+	c.applier.SetEnabled(enabled)
+	if enabled {
+		c.log.Print("DLP re-enabled")
+	} else {
+		c.log.Print("DLP DISABLED (kill switch)")
+	}
+}
 
 func (c *Controller) seedPolicy(initial config.Config) {
 	if _, err := os.Stat(c.policyPath()); err == nil {
@@ -197,6 +221,7 @@ func (c *Controller) Watch(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-poll.C:
+			c.SyncEnabled()
 			c.ReloadPolicyIfChanged()
 			c.ApplyCommands()
 		case <-exp.C:

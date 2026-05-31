@@ -8,9 +8,13 @@ import (
 	"github.com/ronreiter/scdlp/internal/config"
 )
 
-type fakeApplier struct{ last config.Config }
+type fakeApplier struct {
+	last    config.Config
+	enabled bool
+}
 
 func (f *fakeApplier) SetPolicy(c config.Config) { f.last = c }
+func (f *fakeApplier) SetEnabled(b bool)         { f.enabled = b }
 
 type fakeRevoker struct{ revoked []int64 }
 
@@ -47,6 +51,24 @@ func TestReloadPolicyIfChanged_AppliesNewPolicy(t *testing.T) {
 	}
 	if a.last.Match("/x/secret/y") != config.ActionBlock {
 		t.Fatalf("edited policy not applied: %+v", a.last)
+	}
+}
+
+func TestSyncEnabled_TogglesOnMarker(t *testing.T) {
+	c, a, _, dir := newCtl(t, config.Default())
+	// Drop the kill-switch marker.
+	if err := os.WriteFile(filepath.Join(dir, "disabled"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c.SyncEnabled()
+	if a.enabled {
+		t.Fatal("marker present must disable enforcement")
+	}
+	// Remove it → re-enabled.
+	os.Remove(filepath.Join(dir, "disabled"))
+	c.SyncEnabled()
+	if !a.enabled {
+		t.Fatal("marker gone must re-enable enforcement")
 	}
 }
 

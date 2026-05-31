@@ -8,6 +8,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ronreiter/scdlp/internal/audit"
@@ -53,6 +54,8 @@ type Config struct {
 type Engine struct {
 	cfg Config
 
+	enabled atomic.Bool // false = DLP off: allow everything, no prompts
+
 	policyMu sync.RWMutex
 	policy   config.Config // swappable at runtime via SetPolicy
 
@@ -74,6 +77,7 @@ func New(cfg Config) *Engine {
 		policy:  cfg.Scope,
 		auditCh: make(chan audit.Event, 256),
 	}
+	e.enabled.Store(true)
 	// Background audit writer. Keeps SQLite INSERTs off the decision path
 	// — otherwise a slow audit IO could push us past the ES deadline.
 	go e.auditWriter()
@@ -83,6 +87,13 @@ func New(cfg Config) *Engine {
 // SetHelperPresent wires the prompt-UI liveness check after construction. Call
 // before Run starts (no concurrent access).
 func (e *Engine) SetHelperPresent(f func() bool) { e.cfg.HelperPresent = f }
+
+// SetEnabled turns enforcement on/off at runtime. When disabled, every open is
+// allowed with no inspection or prompt — the user-facing kill switch.
+func (e *Engine) SetEnabled(on bool) { e.enabled.Store(on) }
+
+// Enabled reports the current enforcement state.
+func (e *Engine) Enabled() bool { return e.enabled.Load() }
 
 // SetPolicy swaps the active glob policy at runtime (e.g. after the user edits
 // it). Safe to call concurrently with Decide. Empty policy is ignored.
@@ -154,6 +165,10 @@ func (e *Engine) Decide(ev hook.Event) (verdict hook.Decision) {
 }
 
 func (e *Engine) decideInner(ev hook.Event) (hook.Decision, *audit.Event) {
+	// Kill switch: when disabled, allow everything with no inspection.
+	if !e.enabled.Load() {
+		return hook.Allow, nil
+	}
 	// Fast-skip: write-only opens cannot leak data.
 	if ev.Flags&(os.O_WRONLY|os.O_RDWR) == os.O_WRONLY {
 		return hook.Allow, nil

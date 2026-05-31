@@ -209,6 +209,20 @@ func TestEngine_Policy_AllowBlock_AndSetPolicy(t *testing.T) {
 	}
 }
 
+func TestEngine_Disabled_AllowsEverything(t *testing.T) {
+	home := t.TempDir()
+	env := writeEnv(t, home)
+	eng, _ := tempEngine(t, home, fakeResolver{1: {Exe: "/bin/cat", Chain: []string{"/bin/cat"}}})
+	eng.SetEnabled(false)
+	if got := eng.Decide(hook.Event{Path: env, PID: 1}); got != hook.Allow {
+		t.Fatalf("disabled engine must allow everything, got %v", got)
+	}
+	eng.SetEnabled(true)
+	if got := eng.Decide(hook.Event{Path: env, PID: 1}); got != hook.Deny {
+		t.Fatalf("re-enabled engine must enforce (deny-first), got %v", got)
+	}
+}
+
 func TestEngine_WriteOnlyFastAllow(t *testing.T) {
 	home := t.TempDir()
 	eng, _ := tempEngine(t, home, fakeResolver{1: {Exe: "/bin/cat"}})

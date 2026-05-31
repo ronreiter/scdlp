@@ -118,12 +118,13 @@ func TestProcessReplies_AlwaysAllow_InsertsRuleAndCleansUp(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("want 1 processed, got %d", n)
 	}
-	rule, err := r.Lookup(rules.LookupKey{CategoryKey: "dotenv", ChainKey: "chainkey1", Now: time.Now().Unix()})
+	// The rule is scoped to the SPECIFIC file path, not the glob/category.
+	rule, err := r.Lookup(rules.LookupKey{PathKey: "/Users/x/.env", ChainKey: "chainkey1", Now: time.Now().Unix()})
 	if err != nil || rule == nil {
 		t.Fatalf("expected an allow rule, got rule=%v err=%v", rule, err)
 	}
-	if rule.Verdict != rules.VerdictAllow {
-		t.Fatalf("want allow rule, got %v", rule.Verdict)
+	if rule.Verdict != rules.VerdictAllow || rule.FileKeyKind != rules.FKPath {
+		t.Fatalf("want a path-scoped allow rule, got %+v", rule)
 	}
 	// both files removed
 	if _, err := os.Stat(filepath.Join(dir, id+".req.json")); !os.IsNotExist(err) {
@@ -136,12 +137,12 @@ func TestProcessReplies_AlwaysAllow_InsertsRuleAndCleansUp(t *testing.T) {
 
 func TestProcessReplies_AlwaysDeny_InsertsDenyRule(t *testing.T) {
 	s, r, dir := newSpool(t)
-	id, _ := s.Write(Request{Category: "dotenv", IdentityKey: "chainkey2"})
+	id, _ := s.Write(Request{Path: "/Users/x/.env", Category: "dotenv", IdentityKey: "chainkey2"})
 	writeReply(t, dir, id, "deny", "always")
 	if _, err := s.ProcessReplies(); err != nil {
 		t.Fatal(err)
 	}
-	rule, _ := r.Lookup(rules.LookupKey{CategoryKey: "dotenv", ChainKey: "chainkey2", Now: time.Now().Unix()})
+	rule, _ := r.Lookup(rules.LookupKey{PathKey: "/Users/x/.env", ChainKey: "chainkey2", Now: time.Now().Unix()})
 	if rule == nil || rule.Verdict != rules.VerdictDeny {
 		t.Fatalf("want deny rule, got %v", rule)
 	}
@@ -149,13 +150,13 @@ func TestProcessReplies_AlwaysDeny_InsertsDenyRule(t *testing.T) {
 
 func TestProcessReplies_AlwaysExe_InsertsExeOnlyRule(t *testing.T) {
 	s, r, dir := newSpool(t)
-	id, _ := s.Write(Request{Category: "env-file", IdentityKey: "chainK", ExeOnlyKey: "exeK"})
+	id, _ := s.Write(Request{Path: "/Users/x/app/.env", Category: "env-file", IdentityKey: "chainK", ExeOnlyKey: "exeK"})
 	writeReply(t, dir, id, "allow", "always-exe")
 	if _, err := s.ProcessReplies(); err != nil {
 		t.Fatal(err)
 	}
-	// Matches by leaf-exe key, not the chain key.
-	rule, _ := r.Lookup(rules.LookupKey{CategoryKey: "env-file", ExeKey: "exeK", Now: time.Now().Unix()})
+	// Matches by (leaf-exe, specific path), not the chain key or the glob.
+	rule, _ := r.Lookup(rules.LookupKey{PathKey: "/Users/x/app/.env", ExeKey: "exeK", Now: time.Now().Unix()})
 	if rule == nil || rule.Verdict != rules.VerdictAllow || rule.IdentityKind != rules.IKExeOnly {
 		t.Fatalf("want exe-only allow rule, got %+v", rule)
 	}
@@ -176,12 +177,12 @@ func TestHelperAlive(t *testing.T) {
 
 func TestProcessReplies_Once_NoRule(t *testing.T) {
 	s, r, dir := newSpool(t)
-	id, _ := s.Write(Request{Category: "dotenv", IdentityKey: "chainkey3"})
+	id, _ := s.Write(Request{Path: "/Users/x/.env", IdentityKey: "chainkey3"})
 	writeReply(t, dir, id, "allow", "once")
 	if _, err := s.ProcessReplies(); err != nil {
 		t.Fatal(err)
 	}
-	rule, _ := r.Lookup(rules.LookupKey{CategoryKey: "dotenv", ChainKey: "chainkey3", Now: time.Now().Unix()})
+	rule, _ := r.Lookup(rules.LookupKey{PathKey: "/Users/x/.env", ChainKey: "chainkey3", Now: time.Now().Unix()})
 	if rule != nil {
 		t.Fatalf("once must not create a rule, got %v", rule)
 	}

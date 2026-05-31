@@ -79,11 +79,11 @@ func New(dir string, r *rules.Store, logger *log.Logger) (*Spool, error) {
 }
 
 // Write persists a prompt request and returns its id. Repeated requests for the
-// same (identity, category) while one is still outstanding are deduped (return
+// same (identity, file) while one is still outstanding are deduped (return
 // "", nil) so a process reading a file in a loop raises a single prompt, not
 // hundreds.
 func (s *Spool) Write(req Request) (string, error) {
-	key := dedupKey(req.IdentityKey, req.Category)
+	key := dedupKey(req.IdentityKey, req.Path)
 	s.mu.Lock()
 	if s.pending[key] {
 		s.mu.Unlock()
@@ -149,9 +149,9 @@ func (s *Spool) ProcessReplies() (int, error) {
 		if err := s.apply(req, reply); err != nil {
 			s.log.Printf("apply reply id=%s: %v", id, err)
 		}
-		// Allow this (identity, category) to prompt again (unless "always"
-		// created a rule, in which case future reads won't reach the prompt).
-		s.clearPending(dedupKey(req.IdentityKey, req.Category))
+		// Allow this (identity, file) to prompt again (unless a rule was created,
+		// in which case future reads won't reach the prompt).
+		s.clearPending(dedupKey(req.IdentityKey, req.Path))
 		os.Remove(replyPath)
 		os.Remove(reqPath)
 		n++
@@ -162,7 +162,9 @@ func (s *Spool) ProcessReplies() (int, error) {
 func (s *Spool) apply(req Request, reply Reply) error {
 	// "once" (default) leaves no persistent rule. "always" matches the exact
 	// process chain; "always-exe" matches just the leaf executable (broader —
-	// any launch context of that program).
+	// any launch context of that program). Either way the rule is scoped to the
+	// SPECIFIC file that was accessed, not the whole policy glob — so allowing
+	// "cat ./spaceforge/.env" does not allow cat to read every other .env file.
 	var identityKey string
 	var kind rules.IdentityKind
 	switch reply.Scope {
@@ -173,7 +175,7 @@ func (s *Spool) apply(req Request, reply Reply) error {
 	default:
 		return nil
 	}
-	if identityKey == "" || req.Category == "" {
+	if identityKey == "" || req.Path == "" {
 		return nil // not enough context to build a rule
 	}
 	verdict := rules.VerdictAllow
@@ -181,7 +183,7 @@ func (s *Spool) apply(req Request, reply Reply) error {
 		verdict = rules.VerdictDeny
 	}
 	_, err := s.rules.Insert(rules.Rule{
-		FileKey: req.Category, FileKeyKind: rules.FKCategory,
+		FileKey: req.Path, FileKeyKind: rules.FKPath,
 		IdentityKey: identityKey, IdentityKind: kind,
 		Verdict: verdict, CreatedBy: "prompt",
 	})

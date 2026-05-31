@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -38,6 +37,7 @@ func tempEngine(t *testing.T, home string, resolver Resolver) (*Engine, *PromptB
 	}
 	t.Cleanup(func() { adb.Close() })
 	bus := NewPromptBus(8)
+	// Scope left zero → New() applies the default scan list (["env"]).
 	return New(Config{
 		Homes:    []string{home},
 		Rules:    rdb,
@@ -47,49 +47,69 @@ func tempEngine(t *testing.T, home string, resolver Resolver) (*Engine, *PromptB
 	}), bus
 }
 
-func TestEngine_UnprotectedAllow(t *testing.T) {
+// writeEnv creates an in-scope (name contains "env") secret file and returns it.
+func writeEnv(t *testing.T, home string) string {
+	t.Helper()
+	p := filepath.Join(home, ".env")
+	if err := os.WriteFile(p, []byte("AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestEngine_OutOfScope_Allow(t *testing.T) {
 	home := t.TempDir()
-	eng, _ := tempEngine(t, home, fakeResolver{1: {Exe: "/bin/cat", Chain: []string{"/bin/cat"}}})
-	d := eng.Decide(hook.Event{Path: "/etc/hosts", PID: 1})
-	if d != hook.Allow {
+	eng, bus := tempEngine(t, home, fakeResolver{1: {Exe: "/bin/cat", Chain: []string{"/bin/cat"}}})
+	// /etc/hosts has no "env" in its name — must be allowed without inspection.
+	if d := eng.Decide(hook.Event{Path: "/etc/hosts", PID: 1}); d != hook.Allow {
 		t.Fatalf("want allow, got %v", d)
+	}
+	select {
+	case <-bus.C():
+		t.Fatal("out-of-scope file must not publish a prompt")
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
-func TestEngine_ProtectedNoRule_Denies_AndEmitsPrompt(t *testing.T) {
+func TestEngine_OutOfScope_EvenWithSecretContent(t *testing.T) {
+	// Scope is name-based: a non-"env" file is NOT inspected even if it holds
+	// what looks like a credential.
 	home := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(home, ".aws"), 0o700); err != nil {
+	secret := filepath.Join(home, "notes.txt")
+	if err := os.WriteFile(secret, []byte("aws_access_key_id=AKIAIOSFODNN7EXAMPLE\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	creds := filepath.Join(home, ".aws/credentials")
-	if err := os.WriteFile(creds, []byte("[default]\naws_access_key_id=AKIAIOSFODNN7EXAMPLE\n"), 0o600); err != nil {
-		t.Fatal(err)
+	eng, _ := tempEngine(t, home, fakeResolver{1: {Exe: "/bin/cat"}})
+	if d := eng.Decide(hook.Event{Path: secret, PID: 1}); d != hook.Allow {
+		t.Fatalf("non-env file must be allowed regardless of content, got %v", d)
 	}
+}
+
+func TestEngine_InScopeNoRule_Denies_AndEmitsPrompt(t *testing.T) {
+	home := t.TempDir()
+	env := writeEnv(t, home)
 	eng, bus := tempEngine(t, home, fakeResolver{
 		42: {Exe: "/usr/bin/node", Chain: []string{"/usr/bin/node", "/bin/sh", "/usr/local/bin/npm"}},
 	})
-	d := eng.Decide(hook.Event{Path: creds, PID: 42})
-	if d != hook.Deny {
-		t.Fatalf("want deny, got %v", d)
+	if d := eng.Decide(hook.Event{Path: env, PID: 42}); d != hook.Deny {
+		t.Fatalf("want deny (deny-first), got %v", d)
 	}
 	select {
 	case p := <-bus.C():
 		if !strings.Contains(p.HumanIdentity, "node") {
 			t.Fatalf("unexpected human identity: %s", p.HumanIdentity)
 		}
-		if p.Category != "aws-credentials" {
-			t.Fatalf("unexpected category: %s", p.Category)
+		if p.Category == "" {
+			t.Fatal("prompt event must carry a category")
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expected prompt on bus")
 	}
 }
 
-func TestEngine_ProtectedWithAllowRule(t *testing.T) {
+func TestEngine_InScopeWithAllowRule(t *testing.T) {
 	home := t.TempDir()
-	_ = os.MkdirAll(filepath.Join(home, ".aws"), 0o700)
-	creds := filepath.Join(home, ".aws/credentials")
-	_ = os.WriteFile(creds, []byte("[default]\n"), 0o600)
+	env := writeEnv(t, home)
 
 	resolver := fakeResolver{
 		42: {Exe: "/usr/local/bin/aws", Chain: []string{"/usr/local/bin/aws", "/bin/zsh"}},
@@ -98,27 +118,27 @@ func TestEngine_ProtectedWithAllowRule(t *testing.T) {
 
 	id := resolver[42]
 	id.Compute()
+	// Category for a bare .env is "dotenv" (path rule) or "env-file"; the rule
+	// must match whatever the engine derives. Decide once to learn it.
+	_, cat := eng.matcher.Match(env)
+	if cat == "" {
+		cat = "env-file"
+	}
 	if _, err := eng.cfg.Rules.Insert(rules.Rule{
-		FileKey: "aws-credentials", FileKeyKind: rules.FKCategory,
+		FileKey: cat, FileKeyKind: rules.FKCategory,
 		IdentityKey: id.KeyHex, IdentityKind: rules.IKChain,
 		Verdict: rules.VerdictAllow, CreatedBy: "test",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := eng.Decide(hook.Event{Path: creds, PID: 42}); got != hook.Allow {
+	if got := eng.Decide(hook.Event{Path: env, PID: 42}); got != hook.Allow {
 		t.Fatalf("want allow, got %v", got)
 	}
 }
 
 func TestEngine_MonitorOnly_AllowsButStillPrompts(t *testing.T) {
 	home := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(home, ".aws"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	creds := filepath.Join(home, ".aws/credentials")
-	if err := os.WriteFile(creds, []byte("[default]\naws_access_key_id=AKIAIOSFODNN7EXAMPLE\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	env := writeEnv(t, home)
 
 	dir := t.TempDir()
 	rdb, err := rules.Open(filepath.Join(dir, "rules.db"))
@@ -139,7 +159,7 @@ func TestEngine_MonitorOnly_AllowsButStillPrompts(t *testing.T) {
 	})
 
 	// In enforce mode this unknown read would be denied; monitor-only must allow.
-	if got := eng.Decide(hook.Event{Path: creds, PID: 42}); got != hook.Allow {
+	if got := eng.Decide(hook.Event{Path: env, PID: 42}); got != hook.Allow {
 		t.Fatalf("monitor-only must allow, got %v", got)
 	}
 	// …but it must still surface the decision on the prompt bus.
@@ -150,69 +170,41 @@ func TestEngine_MonitorOnly_AllowsButStillPrompts(t *testing.T) {
 	}
 }
 
+func TestEngine_NoHelper_AllowsFirst(t *testing.T) {
+	home := t.TempDir()
+	env := writeEnv(t, home)
+	eng, _ := tempEngine(t, home, fakeResolver{42: {Exe: "/usr/bin/node", Chain: []string{"/usr/bin/node"}}})
+	eng.SetHelperPresent(func() bool { return false }) // prompt UI down
+
+	// Would be deny-first, but with no helper to approve it we fail open.
+	if got := eng.Decide(hook.Event{Path: env, PID: 42}); got != hook.Allow {
+		t.Fatalf("no-helper must allow-first, got %v", got)
+	}
+}
+
+func TestEngine_HelperPresent_DeniesFirst(t *testing.T) {
+	home := t.TempDir()
+	env := writeEnv(t, home)
+	eng, _ := tempEngine(t, home, fakeResolver{42: {Exe: "/usr/bin/node", Chain: []string{"/usr/bin/node"}}})
+	eng.SetHelperPresent(func() bool { return true })
+
+	if got := eng.Decide(hook.Event{Path: env, PID: 42}); got != hook.Deny {
+		t.Fatalf("helper present must deny-first, got %v", got)
+	}
+}
+
 func TestEngine_WriteOnlyFastAllow(t *testing.T) {
 	home := t.TempDir()
 	eng, _ := tempEngine(t, home, fakeResolver{1: {Exe: "/bin/cat"}})
-	d := eng.Decide(hook.Event{Path: filepath.Join(home, ".aws/credentials"),
-		PID: 1, Flags: os.O_WRONLY})
+	d := eng.Decide(hook.Event{Path: filepath.Join(home, ".env"), PID: 1, Flags: os.O_WRONLY})
 	if d != hook.Allow {
 		t.Fatal("write-only opens must short-circuit allow")
 	}
 }
 
-// TestReadFirst4K_DoesNotBlockOnFIFO is a regression test for the ES deadline
-// crash loop. The decision engine runs on a single goroutine; readFirst4K used
-// to call os.Open(O_RDONLY), which blocks indefinitely on a FIFO (or other
-// non-regular file) that has no writer. A single such open() stalls the whole
-// decision loop, so queued AUTH_OPEN events never get answered and the kernel
-// SIGKILLs the ES client for missing its deadline. readFirst4K must never block
-// on a non-regular file.
-func TestReadFirst4K_DoesNotBlockOnFIFO(t *testing.T) {
-	dir := t.TempDir()
-	fifo := filepath.Join(dir, "hang.fifo")
-	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
-		t.Skipf("mkfifo unsupported: %v", err)
-	}
-
-	done := make(chan struct{})
-	go func() {
-		_, _ = readFirst4K(fifo) // must return promptly, not block on open()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("readFirst4K blocked on a FIFO with no writer; it must skip non-regular files")
-	}
-}
-
-// TestDecide_DoesNotBlockOnFIFO exercises the same hazard through the public
-// decision path: a process opening a FIFO must get a prompt verdict, never a
-// hang that would blow the ES deadline.
-func TestDecide_DoesNotBlockOnFIFO(t *testing.T) {
-	home := t.TempDir()
-	fifo := filepath.Join(home, "hang.fifo")
-	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
-		t.Skipf("mkfifo unsupported: %v", err)
-	}
-	eng, _ := tempEngine(t, home, fakeResolver{7: {Exe: "/bin/cat", Chain: []string{"/bin/cat"}}})
-
-	done := make(chan hook.Decision, 1)
-	go func() { done <- eng.Decide(hook.Event{Path: fifo, PID: 7}) }()
-
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Decide blocked opening a FIFO; non-regular files must short-circuit")
-	}
-}
-
 func TestEngine_RunLoopAgainstMockHook(t *testing.T) {
 	home := t.TempDir()
-	_ = os.MkdirAll(filepath.Join(home, ".aws"), 0o700)
-	creds := filepath.Join(home, ".aws/credentials")
-	_ = os.WriteFile(creds, []byte("[default]\n"), 0o600)
+	env := writeEnv(t, home)
 
 	eng, _ := tempEngine(t, home, fakeResolver{
 		99: {Exe: "/usr/bin/curl", Chain: []string{"/usr/bin/curl"}},
@@ -222,7 +214,7 @@ func TestEngine_RunLoopAgainstMockHook(t *testing.T) {
 	defer cancel()
 	go eng.Run(ctx, mh)
 
-	got := mh.Inject(hook.Event{Path: creds, PID: 99})
+	got := mh.Inject(hook.Event{Path: env, PID: 99})
 	if got != hook.Deny {
 		t.Fatalf("want deny, got %v", got)
 	}

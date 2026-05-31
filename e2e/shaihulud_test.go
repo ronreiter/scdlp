@@ -58,9 +58,9 @@ func (b *backend) TailAudit(_ ipc.TailReq) ([]ipc.AuditRow, error) {
 
 func TestShaiHulud_DeniesPostinstall(t *testing.T) {
 	home := t.TempDir()
-	_ = os.MkdirAll(filepath.Join(home, ".aws"), 0o700)
-	creds := filepath.Join(home, ".aws/credentials")
-	_ = os.WriteFile(creds, []byte("[default]\naws_access_key_id=AKIAIOSFODNN7EXAMPLE\n"), 0o600)
+	// Shai-Hulud-style worms exfiltrate .env files; that's our in-scope target.
+	creds := filepath.Join(home, ".env")
+	_ = os.WriteFile(creds, []byte("AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"), 0o600)
 
 	dir := t.TempDir()
 
@@ -110,11 +110,13 @@ func TestShaiHulud_DeniesPostinstall(t *testing.T) {
 	if d != hook.Deny {
 		t.Fatalf("postinstall must be denied, got %v", d)
 	}
+	var cat string
 	select {
 	case p := <-bus.C():
-		if p.Category != "aws-credentials" {
-			t.Fatalf("unexpected category: %s", p.Category)
+		if p.Category == "" {
+			t.Fatal("prompt event must carry a category")
 		}
+		cat = p.Category
 	case <-time.After(time.Second):
 		t.Fatal("expected prompt for the postinstall")
 	}
@@ -129,7 +131,7 @@ func TestShaiHulud_DeniesPostinstall(t *testing.T) {
 		Chain: []string{"/usr/local/bin/aws", "/bin/zsh", "/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"}}
 	legit.Compute()
 	if _, err := c.AddRule(ipc.AddRuleSpec{
-		FileKey: "aws-credentials", FileKeyKind: "category",
+		FileKey: cat, FileKeyKind: "category",
 		IdentityKey: legit.KeyHex, IdentityKind: "chain", Verdict: "allow",
 	}); err != nil {
 		t.Fatal(err)

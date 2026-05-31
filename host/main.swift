@@ -18,9 +18,11 @@ final class Activator: NSObject, OSSystemExtensionRequestDelegate {
         switch result {
         case .completed:
             print("scdlp-host: activation completed")
+            installHelperAgent()
             exit(0)
         case .willCompleteAfterReboot:
             print("scdlp-host: activation will complete after reboot")
+            installHelperAgent()
             exit(0)
         @unknown default:
             print("scdlp-host: activation finished with unknown result")
@@ -31,6 +33,51 @@ final class Activator: NSObject, OSSystemExtensionRequestDelegate {
         print("scdlp-host: activation failed: \(error.localizedDescription)")
         exit(2)
     }
+}
+
+// installHelperAgent installs + (re)loads a per-user LaunchAgent that runs the
+// bundled menu bar helper (the approval-prompt UI) at login and keeps it alive.
+// Runs as the user who launched the host app, so it can write ~/Library and
+// bootstrap into the user's GUI (Aqua) domain.
+func installHelperAgent() {
+    let helperExe = Bundle.main.bundlePath
+        + "/Contents/Library/scdlp-helper.app/Contents/MacOS/scdlp-helper"
+    guard FileManager.default.fileExists(atPath: helperExe) else {
+        print("scdlp-host: bundled helper not found at \(helperExe); skipping agent install")
+        return
+    }
+    let agentsDir = NSHomeDirectory() + "/Library/LaunchAgents"
+    try? FileManager.default.createDirectory(atPath: agentsDir, withIntermediateDirectories: true)
+    let plistPath = agentsDir + "/io.sentra.scdlp.helper.plist"
+
+    let plist: [String: Any] = [
+        "Label": "io.sentra.scdlp.helper",
+        "ProgramArguments": [helperExe],
+        "RunAtLoad": true,
+        "KeepAlive": true,
+        "LimitLoadToSessionType": "Aqua",
+    ]
+    guard let data = try? PropertyListSerialization.data(
+        fromPropertyList: plist, format: .xml, options: 0) else { return }
+    try? data.write(to: URL(fileURLWithPath: plistPath))
+
+    let uid = getuid()
+    runLaunchctl(["bootout", "gui/\(uid)/io.sentra.scdlp.helper"]) // ignore errors
+    if runLaunchctl(["bootstrap", "gui/\(uid)", plistPath]) {
+        print("scdlp-host: prompt helper installed + started")
+    } else {
+        print("scdlp-host: helper agent written to \(plistPath) (will start at next login)")
+    }
+}
+
+@discardableResult
+func runLaunchctl(_ a: [String]) -> Bool {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+    p.arguments = a
+    do { try p.run() } catch { return false }
+    p.waitUntilExit()
+    return p.terminationStatus == 0
 }
 
 let args = CommandLine.arguments

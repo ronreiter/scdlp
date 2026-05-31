@@ -65,10 +65,14 @@ func NewESFHook() (*ESFHook, error) {
 		return nil, fmt.Errorf("es_new_client failed: %s", esErrString(int(errCode)))
 	}
 
+	traceOn := os.Getenv("SCDLP_TRACE") == "1"
+	if _, err := os.Stat("/tmp/scdlp-trace"); err == nil {
+		traceOn = true // marker file: the (env-less) system extension can trace
+	}
 	h := &ESFHook{
 		c:     cli,
 		q:     make(chan pendingESF, 256),
-		trace: os.Getenv("SCDLP_TRACE") == "1", // dev aid: log every event
+		trace: traceOn,
 	}
 	active = h
 	h.applyDefaultMutes()

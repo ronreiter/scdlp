@@ -8,6 +8,7 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/fcntl.h>
 
 #include "esf_glue.h"
 
@@ -101,10 +102,24 @@ scdlp_es_client_t scdlp_es_new_client(int* err_out) {
         uint64_t now = mach_absolute_time();
         uint64_t budget_ns = (m->deadline > now) ? mach_to_ns(m->deadline - now) : 0;
 
+        // es_event_open_t.fflag uses kernel FFLAGS (FREAD=0x1, FWRITE=0x2), NOT
+        // the open(2) O_RDONLY/O_WRONLY/O_RDWR encoding the Go engine expects.
+        // Normalize to O_* access mode so the engine's read/write logic works
+        // (otherwise a read open looks like O_WRONLY and is fast-allowed).
+        uint32_t ff = m->event.open.fflag;
+        uint32_t oflags;
+        if ((ff & FWRITE) && !(ff & FREAD)) {
+            oflags = O_WRONLY;
+        } else if ((ff & FWRITE) && (ff & FREAD)) {
+            oflags = O_RDWR;
+        } else {
+            oflags = O_RDONLY; // read (or neither → inspect, fail safe)
+        }
+
         scdlp_es_event_t ev;
         ev.cookie      = (uint64_t)(uintptr_t)p;
         ev.pid         = audit_token_to_pid(m->process->audit_token);
-        ev.flags       = m->event.open.fflag;
+        ev.flags       = oflags;
         ev.deadline_ns = budget_ns;
 
         // Path and exe are not NUL-terminated in es_string_token_t — copy

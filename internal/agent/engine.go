@@ -3,16 +3,15 @@ package agent
 
 import (
 	"context"
-	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/ronreiter/scdlp/internal/audit"
-	"github.com/ronreiter/scdlp/internal/classify"
+	"github.com/ronreiter/scdlp/internal/config"
 	"github.com/ronreiter/scdlp/internal/hook"
 	"github.com/ronreiter/scdlp/internal/identity"
 	"github.com/ronreiter/scdlp/internal/pathrules"
@@ -42,12 +41,20 @@ type Config struct {
 	// never return Deny — unknown reads are allowed through instead of blocked
 	// with EACCES. Safe default until the user-facing approval prompt exists.
 	MonitorOnly bool
+
+	// Scope decides which files are inspected at all: a file is checked only if
+	// its base name matches the configured scan list (default ["env"]).
+	Scope config.Config
+
+	// HelperPresent reports whether the user-facing prompt UI is available. When
+	// it returns false, an unknown in-scope read fails OPEN (allow-first) rather
+	// than being denied with no way to approve it. Nil ⇒ always-present.
+	HelperPresent func() bool
 }
 
 type Engine struct {
 	cfg     Config
 	matcher *pathrules.Matcher
-	classif *classify.Classifier
 
 	auditCh chan audit.Event // 256-deep; full = drop with counter increment
 }
@@ -59,10 +66,12 @@ func New(cfg Config) *Engine {
 	if cfg.Logger == nil {
 		cfg.Logger = log.New(os.Stderr, "agent: ", log.LstdFlags|log.Lmicroseconds)
 	}
+	if len(cfg.Scope.ScanNameSubstrings) == 0 {
+		cfg.Scope = config.Default()
+	}
 	e := &Engine{
 		cfg:     cfg,
 		matcher: pathrules.NewWithDefaults(cfg.Homes),
-		classif: classify.New(),
 		auditCh: make(chan audit.Event, 256),
 	}
 	// Background audit writer. Keeps SQLite INSERTs off the decision path
@@ -70,6 +79,10 @@ func New(cfg Config) *Engine {
 	go e.auditWriter()
 	return e
 }
+
+// SetHelperPresent wires the prompt-UI liveness check after construction. Call
+// before Run starts (no concurrent access).
+func (e *Engine) SetHelperPresent(f func() bool) { e.cfg.HelperPresent = f }
 
 func (e *Engine) auditWriter() {
 	defer func() {
@@ -129,28 +142,19 @@ func (e *Engine) decideInner(ev hook.Event) (hook.Decision, *audit.Event) {
 		return hook.Allow, nil
 	}
 
-	matched, category := e.matcher.Match(ev.Path)
-	matchedKind := category
-	contentMatch := ""
-	if !matched {
-		buf, err := readFirst4K(ev.Path)
-		if err != nil {
-			// Silently dropped before; now surface as warning so we can
-			// see when sandbox/TCC denies reads we expected to succeed.
-			e.cfg.Logger.Printf("readFirst4K %q: %v", ev.Path, err)
-		}
-		if buf != nil {
-			v := e.classif.ClassifyBuf(buf)
-			if v.IsSecret() {
-				matched = true
-				matchedKind = v.Match
-				contentMatch = v.Match
-			}
-		}
-	}
-	if !matched {
+	// Scope gate: only files whose base name matches the configured scan list
+	// are inspected (default ["env"]). Everything else is allowed untouched.
+	if !e.cfg.Scope.InScope(filepath.Base(ev.Path)) {
 		return hook.Allow, nil
 	}
+
+	// In scope → a protected file. Use the path-rule category as a friendly
+	// label when one matches (e.g. ".env" → "dotenv"); otherwise "env-file".
+	_, category := e.matcher.Match(ev.Path)
+	if category == "" {
+		category = "env-file"
+	}
+	matchedKind := category
 
 	id, err := e.cfg.Resolver.Resolve(ev.PID)
 	if err != nil {
@@ -202,9 +206,17 @@ func (e *Engine) decideInner(ev hook.Event) (hook.Decision, *audit.Event) {
 		audited.RuleID = &r.ID
 		return hook.Deny, audited
 	default:
+		// Unknown (process, category) → prompt. Deny-first only if a prompt UI
+		// is available to approve it; if the helper is down, fail OPEN so we
+		// don't silently block reads no one can allow.
+		if e.cfg.HelperPresent != nil && !e.cfg.HelperPresent() {
+			audited.Verdict = "allow-no-helper"
+			e.cfg.Logger.Printf("no prompt helper; allowing in-scope read path=%q pid=%d", ev.Path, ev.PID)
+			return hook.Allow, audited
+		}
 		audited.Verdict = "deny"
 		e.cfg.Bus.Publish(PromptEvent{
-			FilePath: ev.Path, Category: ifEmpty(category, contentMatch),
+			FilePath: ev.Path, Category: category,
 			MatchedKind: matchedKind, PID: ev.PID, Exe: id.Exe,
 			HumanIdentity: id.HumanChainStr(),
 			IdentityKey:   id.KeyHex, ExeOnlyKey: id.ExeOnlyKey,
@@ -235,44 +247,4 @@ func (e *Engine) Run(ctx context.Context, h hook.Hook) {
 		}
 		decide(e.Decide(ev))
 	}
-}
-
-// readFirst4K returns the first 4 KiB of path. Returns (nil, err) on open
-// failures (sandbox denials, missing file, permission); (buf, nil) when
-// readable. EOF before 4 KiB is normal and returns the partial buffer.
-func readFirst4K(path string) ([]byte, error) {
-	// O_NONBLOCK so opening a FIFO/device with no peer cannot block the
-	// (single-threaded) decision path. A stalled open() would let queued
-	// AUTH_OPEN events miss the kernel's response deadline and get the whole
-	// ES client SIGKILLed — the v1.0.x restart loop.
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	// Only regular files hold credentials worth classifying. FIFOs, devices,
-	// sockets, and directories are never secret stores, and reading them can
-	// block or trigger side effects — skip them (treated as non-secret).
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, nil
-	}
-
-	buf := make([]byte, 4096)
-	n, err := io.ReadFull(f, buf)
-	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-		return nil, err
-	}
-	return buf[:n], nil
-}
-
-func ifEmpty(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
 }

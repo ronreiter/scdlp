@@ -49,6 +49,12 @@ type Config struct {
 	// it returns false, an unknown in-scope read fails OPEN (allow-first) rather
 	// than being denied with no way to approve it. Nil ⇒ always-present.
 	HelperPresent func() bool
+
+	// RepromptCooldown is how long after prompting on a (process, file) the
+	// engine suppresses *re-prompting* the same pair. The read is still denied,
+	// but no new prompt is raised — this is what stops a chatty background
+	// reader (e.g. an AI terminal) from flooding the user. Zero ⇒ default 60s.
+	RepromptCooldown time.Duration
 }
 
 type Engine struct {
@@ -58,6 +64,11 @@ type Engine struct {
 
 	policyMu sync.RWMutex
 	policy   config.Config // swappable at runtime via SetPolicy
+
+	now func() time.Time // injectable clock (tests); defaults to time.Now
+
+	promptMu   sync.Mutex
+	lastPrompt map[string]time.Time // (identity|path) → last time we raised a prompt
 
 	auditCh chan audit.Event // 256-deep; full = drop with counter increment
 }
@@ -72,10 +83,15 @@ func New(cfg Config) *Engine {
 	if len(cfg.Scope.Policy) == 0 {
 		cfg.Scope = config.Default()
 	}
+	if cfg.RepromptCooldown == 0 {
+		cfg.RepromptCooldown = 60 * time.Second
+	}
 	e := &Engine{
-		cfg:     cfg,
-		policy:  cfg.Scope,
-		auditCh: make(chan audit.Event, 256),
+		cfg:        cfg,
+		policy:     cfg.Scope,
+		now:        time.Now,
+		lastPrompt: make(map[string]time.Time),
+		auditCh:    make(chan audit.Event, 256),
 	}
 	e.enabled.Store(true)
 	// Background audit writer. Keeps SQLite INSERTs off the decision path
@@ -110,6 +126,32 @@ func (e *Engine) matchPolicy(path string) (config.Action, string) {
 	e.policyMu.RLock()
 	defer e.policyMu.RUnlock()
 	return e.policy.Matched(path)
+}
+
+// SetClock overrides the engine clock (tests only).
+func (e *Engine) SetClock(f func() time.Time) { e.now = f }
+
+// trustsChain reports whether the process ancestry belongs to a trusted app.
+func (e *Engine) trustsChain(chain []string) bool {
+	e.policyMu.RLock()
+	defer e.policyMu.RUnlock()
+	return e.policy.TrustsChain(chain)
+}
+
+// shouldPrompt records that we are about to prompt on (identity, path) and
+// reports whether a prompt should actually be raised — false if we prompted on
+// the same pair within RepromptCooldown (so we deny silently instead of
+// flooding). It only updates the timestamp when it returns true.
+func (e *Engine) shouldPrompt(identityKey, path string) bool {
+	key := identityKey + "|" + path
+	now := e.now()
+	e.promptMu.Lock()
+	defer e.promptMu.Unlock()
+	if last, ok := e.lastPrompt[key]; ok && now.Sub(last) < e.cfg.RepromptCooldown {
+		return false
+	}
+	e.lastPrompt[key] = now
+	return true
 }
 
 func (e *Engine) auditWriter() {
@@ -201,6 +243,20 @@ func (e *Engine) decideInner(ev hook.Event) (hook.Decision, *audit.Event) {
 		id.Compute()
 	}
 
+	// Trusted app: any ancestor belongs to an app the user has allowlisted, so
+	// allow without prompting (and record it). This is the durable escape hatch
+	// for legitimate-but-chatty readers whose per-exe identity is unstable.
+	if e.trustsChain(id.Chain) {
+		return hook.Allow, &audit.Event{
+			TS: time.Now().Unix(), FilePath: ev.Path,
+			FileKey: category, FileKeyKind: "category",
+			ProcessPID: ev.PID, ProcessExe: id.Exe,
+			ProcessChain: strings.Join(id.HumanChain(), "|"),
+			IdentityKey:  id.KeyHex, MatchedKind: category,
+			Verdict: "allow-trusted",
+		}
+	}
+
 	audited := &audit.Event{
 		TS:           time.Now().Unix(),
 		FilePath:     ev.Path,
@@ -245,6 +301,12 @@ func (e *Engine) decideInner(ev hook.Event) (hook.Decision, *audit.Event) {
 			audited.Verdict = "allow-no-helper"
 			e.cfg.Logger.Printf("no prompt helper; allowing in-scope read path=%q pid=%d", ev.Path, ev.PID)
 			return hook.Allow, audited
+		}
+		// Deny either way; only raise a prompt if we haven't recently prompted
+		// on this exact (process, file) — otherwise a chatty reader floods us.
+		if !e.shouldPrompt(id.KeyHex, ev.Path) {
+			audited.Verdict = "deny-cooldown"
+			return hook.Deny, audited
 		}
 		audited.Verdict = "deny"
 		e.cfg.Bus.Publish(PromptEvent{

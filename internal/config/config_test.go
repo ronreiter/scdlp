@@ -82,3 +82,29 @@ func TestLoad_ReadsPolicy(t *testing.T) {
 		t.Errorf("policy from file not applied; got %q", c.Match("/a/secret/x"))
 	}
 }
+
+func TestTrustsChain(t *testing.T) {
+	c := Config{TrustedApps: []string{"Moltty", "iTerm"}}
+	cases := []struct {
+		name  string
+		chain []string
+		want  bool
+	}{
+		{"app bundle in ancestry", []string{"/Applications/Moltty.app/Contents/MacOS/2.1.159", "/bin/zsh", "/Applications/Moltty.app/Contents/MacOS/Moltty"}, true},
+		{"basename match", []string{"/opt/iTerm", "/sbin/launchd"}, true},
+		{"case-insensitive", []string{"/Applications/MOLTTY.app/Contents/MacOS/x"}, true},
+		{"untrusted", []string{"/bin/cat", "/bin/zsh", "/usr/libexec/Terminal"}, false},
+		{"empty", nil, false},
+	}
+	for _, tc := range cases {
+		if got := c.TrustsChain(tc.chain); got != tc.want {
+			t.Errorf("%s: TrustsChain=%v want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestTrustsChain_NoTrustedApps(t *testing.T) {
+	if (Config{}).TrustsChain([]string{"/Applications/Moltty.app/Contents/MacOS/Moltty"}) {
+		t.Error("no trusted apps configured must never trust")
+	}
+}

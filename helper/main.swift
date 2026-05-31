@@ -23,7 +23,7 @@ struct Request: Codable {
 }
 struct Reply: Codable { let decision, scope: String }
 struct PolicyEntry: Codable { var glob: String; var action: String }
-struct PolicyDoc: Codable { var policy: [PolicyEntry] }
+struct PolicyDoc: Codable { var policy: [PolicyEntry]; var trusted_apps: [String]? }
 struct HistoryRow: Codable { let ts: Int; let verdict, path, process, category: String }
 struct RuleRow: Codable { let id: Int; let glob, identity_kind, verdict, created_by: String }
 
@@ -31,6 +31,49 @@ func loadJSON<T: Decodable>(_ path: String, _ type: T.Type) -> T? {
     guard let data = FileManager.default.contents(atPath: path) else { return nil }
     return try? JSONDecoder().decode(T.self, from: data)
 }
+
+func writePolicyDoc(_ doc: PolicyDoc) {
+    let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+    if let data = try? enc.encode(doc) { try? data.write(to: URL(fileURLWithPath: policyPath)) }
+}
+
+// addTrustedApp appends an app name to policy.json's trusted_apps (the extension
+// then allows that app's whole process tree without prompting). Preserves the
+// existing policy globs.
+func addTrustedApp(_ app: String) {
+    let name = app.trimmingCharacters(in: .whitespaces)
+    guard !name.isEmpty else { return }
+    var doc = loadJSON(policyPath, PolicyDoc.self) ?? PolicyDoc(policy: [], trusted_apps: [])
+    var apps = doc.trusted_apps ?? []
+    if !apps.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) { apps.append(name) }
+    doc.trusted_apps = apps
+    writePolicyDoc(doc)
+}
+
+// responsibleApp picks the outermost GUI app in a "leaf ← … ← launchd" chain —
+// the thing worth trusting (e.g. "Moltty"), not the transient leaf process.
+func responsibleApp(fromChain chain: String) -> String {
+    chain.components(separatedBy: " ← ")
+        .map { $0.trimmingCharacters(in: .whitespaces) }
+        .filter { !$0.isEmpty && $0.lowercased() != "launchd" }
+        .last ?? ""
+}
+
+let aboutText = """
+Supply Chain DLP (SCDLP) is a macOS Endpoint Security system extension that \
+watches for processes reading credential and secret files — .env files, cloud \
+provider credentials (AWS, GCP, Azure), SSH/GPG keys, package-manager and \
+git tokens, kubeconfigs, and more.
+
+When an unrecognized process tries to read a protected file, SCDLP blocks the \
+read and asks you to approve or deny it — so a compromised dependency, build \
+script, or AI agent in your supply chain can't quietly exfiltrate your secrets. \
+Your decisions are remembered as scoped rules.
+
+Use the Policy tab to choose which files are protected, Trusted Apps to \
+allowlist tools you trust to read secrets, and History to see every decision. \
+The menu-bar shield toggles enforcement on and off.
+"""
 
 // ───── dashboard window ─────────────────────────────────────────────────────
 
@@ -73,7 +116,9 @@ final class Dashboard: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTabl
         tabs.autoresizingMask = [.width, .height]
         tabs.addTabViewItem(historyTab())
         tabs.addTabViewItem(policyTab())
+        tabs.addTabViewItem(trustedTab())
         tabs.addTabViewItem(rulesTab())
+        tabs.addTabViewItem(aboutTab())
         window.contentView!.addSubview(tabs)
     }
 
@@ -148,6 +193,10 @@ final class Dashboard: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTabl
         if reloadPolicy, let doc = loadJSON(policyPath, PolicyDoc.self) {
             policy = doc.policy
             policyTable.reloadData()
+            // Don't stomp an in-progress edit: only refill when not focused.
+            if window?.firstResponder !== trustedView {
+                trustedView.string = (doc.trusted_apps ?? []).joined(separator: "\n")
+            }
         }
     }
 
@@ -226,8 +275,57 @@ final class Dashboard: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTabl
     }
     @objc func savePolicy() {
         let entries = policy.filter { !$0.glob.trimmingCharacters(in: .whitespaces).isEmpty }
-        if let data = try? JSONEncoder().encode(PolicyDoc(policy: entries)) {
-            try? data.write(to: URL(fileURLWithPath: policyPath))
+        let existing = loadJSON(policyPath, PolicyDoc.self)
+        writePolicyDoc(PolicyDoc(policy: entries, trusted_apps: existing?.trusted_apps))
+    }
+
+    // ── Trusted Apps tab: one app name per line, allowlisted to read secrets ──
+    let trustedView = NSTextView()
+    func trustedTab() -> NSTabViewItem {
+        return tab("Trusted Apps") { v in
+            let hint = NSTextField(wrappingLabelWithString:
+                "Apps listed here may read any protected file without prompting. One per line (e.g. \"Moltty\"). Matched against the whole process tree.")
+            hint.frame = NSRect(x: 12, y: 388, width: 716, height: 36)
+            hint.textColor = .secondaryLabelColor
+            v.addSubview(hint)
+            trustedView.isRichText = false
+            trustedView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+            trustedView.isAutomaticQuoteSubstitutionEnabled = false
+            v.addSubview(scrolling(trustedView, NSRect(x: 12, y: 48, width: 716, height: 332)))
+            let save = NSButton(title: "Save", target: self, action: #selector(saveTrusted))
+            save.bezelStyle = .rounded; save.keyEquivalent = "\r"
+            save.frame = NSRect(x: 740 - 90, y: 8, width: 80, height: 28)
+            save.autoresizingMask = [.minXMargin]
+            v.addSubview(save)
+        }
+    }
+    @objc func saveTrusted() {
+        let apps = trustedView.string.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let existing = loadJSON(policyPath, PolicyDoc.self)
+        writePolicyDoc(PolicyDoc(policy: existing?.policy ?? [], trusted_apps: apps.isEmpty ? nil : apps))
+    }
+
+    // ── About tab: branding + what SCDLP is ──
+    func aboutTab() -> NSTabViewItem {
+        return tab("About") { v in
+            let icon = NSImageView(frame: NSRect(x: 28, y: 312, width: 88, height: 88))
+            let cfg = NSImage.SymbolConfiguration(pointSize: 80, weight: .semibold)
+                .applying(NSImage.SymbolConfiguration(paletteColors: [.systemBlue]))
+            icon.image = NSImage(systemSymbolName: "lock.shield.fill", accessibilityDescription: "SCDLP")?
+                .withSymbolConfiguration(cfg)
+            v.addSubview(icon)
+            let title = NSTextField(labelWithString: "Supply Chain DLP")
+            title.font = .systemFont(ofSize: 24, weight: .bold)
+            title.frame = NSRect(x: 130, y: 360, width: 580, height: 32)
+            v.addSubview(title)
+            let sub = NSTextField(labelWithString: "SCDLP · macOS Endpoint Security extension")
+            sub.textColor = .secondaryLabelColor
+            sub.frame = NSRect(x: 130, y: 332, width: 580, height: 22)
+            v.addSubview(sub)
+            let body = NSTextField(wrappingLabelWithString: aboutText)
+            body.frame = NSRect(x: 28, y: 24, width: 684, height: 280)
+            v.addSubview(body)
         }
     }
 
@@ -333,6 +431,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let exe = (req.exe as NSString).lastPathComponent
         let alert = NSAlert()
         alert.alertStyle = .critical
+        // Brand the prompt with a shield instead of the default caution triangle.
+        let iconCfg = NSImage.SymbolConfiguration(pointSize: 56, weight: .semibold)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [.systemBlue]))
+        if let shield = NSImage(systemSymbolName: "lock.shield.fill", accessibilityDescription: "SCDLP")?
+            .withSymbolConfiguration(iconCfg) {
+            shield.isTemplate = false
+            alert.icon = shield
+        }
         alert.messageText = "Allow \(exe) to read a secret file?"
         alert.informativeText = """
         File: \(req.path)
@@ -341,14 +447,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         """
         alert.addButton(withTitle: "Deny")
         alert.addButton(withTitle: "Allow")
-        let scope = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 340, height: 25), pullsDown: false)
-        scope.addItems(withTitles: ["Just this once", "Always — for \(exe) (any launch)", "Always — for this exact process"])
+
+        let app = responsibleApp(fromChain: req.human_chain)
+        var scopes = ["Just this once", "Always — for \(exe) (any launch)", "Always — for this exact process"]
+        let trustIndex = app.isEmpty ? -1 : scopes.count
+        if !app.isEmpty { scopes.append("Always — trust the app “\(app)” completely") }
+        let scope = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 25), pullsDown: false)
+        scope.addItems(withTitles: scopes)
         scope.selectItem(at: 1)
         alert.accessoryView = scope
         NSApp.activate(ignoringOtherApps: true)
         let resp = alert.runModal()
+
+        let idx = scope.indexOfSelectedItem
         let decision = (resp == .alertSecondButtonReturn) ? "allow" : "deny"
-        let scopeStr = ["once", "always-exe", "always"][min(max(scope.indexOfSelectedItem, 0), 2)]
+        var scopeStr = "once"
+        if decision == "allow", idx == trustIndex {
+            // Trust the whole app: persist it to the policy + allow this read now.
+            addTrustedApp(app)
+        } else {
+            scopeStr = ["once", "always-exe", "always"][min(max(idx, 0), 2)]
+        }
         if let data = try? JSONEncoder().encode(Reply(decision: decision, scope: scopeStr)) {
             try? data.write(to: URL(fileURLWithPath: replyPath))
         }

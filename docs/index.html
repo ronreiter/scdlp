@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SCDLP — Supply Chain DLP for macOS</title>
+<meta name="description" content="SCDLP is a macOS Endpoint Security extension that blocks unknown processes from reading your credentials and secrets — stopping supply-chain exfiltration in real time.">
+<meta property="og:title" content="Supply Chain DLP (SCDLP)">
+<meta property="og:description" content="Stop a compromised dependency or AI agent from quietly reading your .env, cloud, and SSH secrets — with a Little-Snitch-style approval prompt.">
+<meta property="og:type" content="website">
+<link rel="icon" href="shield.svg" type="image/svg+xml">
+<style>
+  :root{
+    --bg:#070b16; --bg2:#0d1426; --card:#111a30; --line:#1e2a47;
+    --txt:#e8edf8; --mut:#9aa7c4; --accent:#5b8cff; --accent2:#7aa2ff;
+    --good:#36d399; --warn:#ffcc66; --bad:#ff6b6b;
+    --maxw:1080px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:radial-gradient(1200px 700px at 70% -10%,#16224a 0,var(--bg) 55%);
+    color:var(--txt);font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  a{color:var(--accent2);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px}
+  code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+
+  /* nav */
+  header.nav{position:sticky;top:0;z-index:10;backdrop-filter:blur(10px);
+    background:rgba(7,11,22,.7);border-bottom:1px solid var(--line)}
+  .nav .wrap{display:flex;align-items:center;gap:14px;height:62px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:.2px}
+  .brand img{width:28px;height:28px}
+  .nav nav{margin-left:auto;display:flex;gap:22px;font-size:14px;color:var(--mut)}
+  .nav nav a{color:var(--mut)}
+  .btn{display:inline-block;background:linear-gradient(135deg,var(--accent),#2f5bd6);
+    color:#fff;padding:11px 18px;border-radius:10px;font-weight:600;border:1px solid #6f97ff44}
+  .btn:hover{text-decoration:none;filter:brightness(1.08)}
+  .btn.ghost{background:transparent;border:1px solid var(--line);color:var(--txt)}
+
+  /* hero */
+  .hero{padding:84px 0 56px;text-align:center}
+  .hero img.logo{width:104px;height:104px;filter:drop-shadow(0 10px 30px #2f5bd655)}
+  .tag{display:inline-block;margin:22px 0 10px;padding:5px 12px;border:1px solid var(--line);
+    border-radius:999px;color:var(--mut);font-size:13px}
+  .hero h1{font-size:clamp(34px,6vw,58px);line-height:1.05;margin:.2em 0 .15em;letter-spacing:-1px}
+  .hero h1 .grad{background:linear-gradient(120deg,#7aa2ff,#36d399);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero p.lead{max-width:680px;margin:0 auto 28px;color:var(--mut);font-size:19px}
+  .cta{display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
+
+  /* sections */
+  section{padding:54px 0}
+  h2{font-size:30px;letter-spacing:-.5px;margin:0 0 6px}
+  .sub{color:var(--mut);margin:0 0 30px}
+  .grid{display:grid;gap:18px}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .g2{grid-template-columns:repeat(2,1fr)}
+  @media(max-width:820px){.g3,.g2{grid-template-columns:1fr}.nav nav{display:none}}
+  .card{background:linear-gradient(180deg,var(--card),#0e1628);border:1px solid var(--line);
+    border-radius:16px;padding:22px}
+  .card h3{margin:.2em 0 .35em;font-size:18px}
+  .card p{margin:0;color:var(--mut);font-size:15px}
+  .ico{width:40px;height:40px;border-radius:11px;display:grid;place-items:center;
+    background:#16224a;border:1px solid #2a3c6e;margin-bottom:12px;font-size:20px}
+
+  /* flow */
+  .flow{counter-reset:step}
+  .flow .card{display:flex;gap:16px;align-items:flex-start}
+  .flow .num{flex:none;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;
+    background:linear-gradient(135deg,var(--accent),#2f5bd6);font-weight:700}
+
+  /* code */
+  pre{background:#0a1124;border:1px solid var(--line);border-radius:14px;padding:18px 20px;
+    overflow:auto;color:#cdd8f5;font-size:14px}
+  pre .c{color:#6b7aa3}
+  pre .k{color:#7aa2ff}
+
+  /* shots */
+  .shot{border:1px dashed var(--line);border-radius:16px;min-height:240px;display:grid;
+    place-items:center;color:var(--mut);background:#0b1326;text-align:center;padding:24px}
+
+  footer{border-top:1px solid var(--line);padding:34px 0;color:var(--mut);font-size:14px}
+  .footrow{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
+  .pill{font-size:12px;color:var(--good);border:1px solid #1f5a44;background:#0c2a22;
+    padding:3px 10px;border-radius:999px}
+</style>
+</head>
+<body>
+
+<header class="nav"><div class="wrap">
+  <a class="brand" href="#top"><img src="shield.svg" alt=""> SCDLP</a>
+  <nav>
+    <a href="#problem">Problem</a>
+    <a href="#how">How it works</a>
+    <a href="#features">Features</a>
+    <a href="#install">Install</a>
+  </nav>
+  <a class="btn ghost" href="https://github.com/ronreiter/scdlp" style="margin-left:18px">GitHub ↗</a>
+</div></header>
+
+<a id="top"></a>
+<section class="hero"><div class="wrap">
+  <img class="logo" src="shield.svg" alt="SCDLP shield logo">
+  <div class="tag">macOS · Apple Endpoint Security</div>
+  <h1>Supply Chain DLP<br><span class="grad">for your secrets</span></h1>
+  <p class="lead">SCDLP watches every file open on your Mac and blocks unknown processes from
+  reading your credentials — <strong>.env files, cloud keys, SSH/GPG, tokens</strong> — with a
+  Little-Snitch-style approval prompt. A compromised dependency or rogue AI agent can't quietly
+  exfiltrate what it can't read.</p>
+  <div class="cta">
+    <a class="btn" href="https://github.com/ronreiter/scdlp/releases/latest/download/scdlp.dmg">Download scdlp.dmg</a>
+    <a class="btn ghost" href="#how">See how it works</a>
+  </div>
+</div></section>
+
+<section id="problem"><div class="wrap">
+  <h2>The supply-chain secret leak</h2>
+  <p class="sub">One <code>npm install</code> runs code you never read.</p>
+  <div class="grid g3">
+    <div class="card"><div class="ico">📦</div><h3>postinstall hooks</h3>
+      <p>npm / pip / cargo / gem run arbitrary scripts on install. The classic payload reads
+      <code>~/.aws/credentials</code>, <code>~/.npmrc</code>, <code>.env</code> and phones home.</p></div>
+    <div class="card"><div class="ico">🤖</div><h3>AI agents &amp; terminals</h3>
+      <p>Agentic tools scan your working directory for "context" — sweeping up <code>.env</code> files
+      and cloud tokens you never meant to share.</p></div>
+    <div class="card"><div class="ico">🕳️</div><h3>No visibility</h3>
+      <p>By default macOS lets any process you run read any file you can. You never even see it happen —
+      until the breach notification arrives.</p></div>
+  </div>
+</div></section>
+
+<section id="how" style="background:linear-gradient(180deg,transparent,#0a112400)"><div class="wrap">
+  <h2>How it works</h2>
+  <p class="sub">A signed system extension on Apple's Endpoint Security framework — kernel-grade, not a shim.</p>
+  <div class="grid flow" style="gap:14px">
+    <div class="card"><div class="num">1</div><div>
+      <h3>Intercept</h3><p>SCDLP subscribes to authorization <code>open</code> events. Every read of a
+      protected file pauses in-kernel until SCDLP decides.</p></div></div>
+    <div class="card"><div class="num">2</div><div>
+      <h3>Identify</h3><p>It resolves the full process ancestry — which program, launched by what,
+      under which app — and matches the file against your policy of path globs.</p></div></div>
+    <div class="card"><div class="num">3</div><div>
+      <h3>Decide</h3><p>Known-good? Allowed instantly. Unknown? Denied first, and you get a prompt:
+      <em>"Allow <code>node</code> to read <code>~/.aws/credentials</code>?"</em></p></div></div>
+    <div class="card"><div class="num">4</div><div>
+      <h3>Remember</h3><p>Your choice becomes a scoped rule — this exact file, this program, or this whole
+      trusted app — so you're asked once, not every time.</p></div></div>
+  </div>
+</div></section>
+
+<section id="features"><div class="wrap">
+  <h2>What you get</h2>
+  <p class="sub">Defense that stays out of your way.</p>
+  <div class="grid g3">
+    <div class="card"><div class="ico">🛡️</div><h3>Real-time enforcement</h3>
+      <p>Reads are blocked <em>before</em> the bytes leave disk — not logged after the fact.</p></div>
+    <div class="card"><div class="ico">📝</div><h3>Editable policy</h3>
+      <p>A table of path globs (<code>*.env*</code>, <code>*/.aws/credentials</code>, …) you can add,
+      remove, and tune from the menu bar app.</p></div>
+    <div class="card"><div class="ico">✅</div><h3>Trusted apps</h3>
+      <p>Allowlist tools you trust to read secrets — once — so chatty-but-legit apps never flood you.</p></div>
+    <div class="card"><div class="ico">🔕</div><h3>No prompt storms</h3>
+      <p>Per-process re-prompt cooldown means a noisy reader is denied quietly, not 50 dialogs deep.</p></div>
+    <div class="card"><div class="ico">📊</div><h3>Full history</h3>
+      <p>Every allow/deny, with file, process chain, and category — auditable in the dashboard.</p></div>
+    <div class="card"><div class="ico">⏻</div><h3>One-click kill switch</h3>
+      <p>Toggle enforcement from the menu-bar shield whenever you need to get out of the way.</p></div>
+  </div>
+</div></section>
+
+<section id="screens"><div class="wrap">
+  <h2>Screenshots</h2>
+  <p class="sub">The approval prompt and dashboard.</p>
+  <div class="grid g2">
+    <div class="shot">Approval prompt<br><small>(screenshot coming soon)</small></div>
+    <div class="shot">Dashboard — History / Policy / Trusted Apps<br><small>(screenshot coming soon)</small></div>
+  </div>
+</div></section>
+
+<section id="install"><div class="wrap">
+  <h2>Install</h2>
+  <p class="sub">Signed &amp; notarized. Requires macOS 13+ and one approval in System Settings.</p>
+  <div class="grid g2">
+    <div class="card"><h3>Download the app</h3>
+      <p style="margin-bottom:14px">Grab the latest signed build and drag it to Applications:</p>
+      <pre><span class="c"># latest notarized release</span>
+open <span class="k">https://github.com/ronreiter/scdlp/releases/latest</span></pre>
+      <p style="margin-top:14px">On first launch, approve the system extension in
+      <strong>System Settings → General → Login Items &amp; Extensions → Endpoint Security</strong>,
+      and grant <strong>Full Disk Access</strong> to the extension.</p></div>
+    <div class="card"><h3>Build from source</h3>
+      <pre><span class="c"># needs Go + Xcode + a Developer ID cert</span>
+git clone <span class="k">https://github.com/ronreiter/scdlp</span>
+cd scdlp
+brew install go-task
+task build</pre>
+      <p style="margin-top:14px">See <a href="https://github.com/ronreiter/scdlp/blob/main/docs/install.md">docs/install.md</a>
+      for signing, notarization, and local deployment.</p></div>
+  </div>
+</div></section>
+
+<footer><div class="wrap footrow">
+  <div>
+    <span class="pill">open source</span>
+    &nbsp; Supply Chain DLP (SCDLP) — anti-exfiltration for macOS.
+  </div>
+  <div>
+    <a href="https://github.com/ronreiter/scdlp">Source</a> ·
+    <a href="https://github.com/ronreiter/scdlp/releases">Releases</a> ·
+    <a href="https://github.com/ronreiter/scdlp/issues">Issues</a>
+  </div>
+</div></footer>
+
+</body>
+</html>

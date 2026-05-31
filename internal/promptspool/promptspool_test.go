@@ -122,6 +122,33 @@ func TestProcessReplies_AlwaysDeny_InsertsDenyRule(t *testing.T) {
 	}
 }
 
+func TestProcessReplies_AlwaysExe_InsertsExeOnlyRule(t *testing.T) {
+	s, r, dir := newSpool(t)
+	id, _ := s.Write(Request{Category: "env-file", IdentityKey: "chainK", ExeOnlyKey: "exeK"})
+	writeReply(t, dir, id, "allow", "always-exe")
+	if _, err := s.ProcessReplies(); err != nil {
+		t.Fatal(err)
+	}
+	// Matches by leaf-exe key, not the chain key.
+	rule, _ := r.Lookup(rules.LookupKey{CategoryKey: "env-file", ExeKey: "exeK", Now: time.Now().Unix()})
+	if rule == nil || rule.Verdict != rules.VerdictAllow || rule.IdentityKind != rules.IKExeOnly {
+		t.Fatalf("want exe-only allow rule, got %+v", rule)
+	}
+}
+
+func TestHelperAlive(t *testing.T) {
+	s, _, _ := newSpool(t)
+	if s.HelperAlive() {
+		t.Fatal("no heartbeat yet → must be not-alive")
+	}
+	if err := os.WriteFile(s.HeartbeatPath(), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !s.HelperAlive() {
+		t.Fatal("fresh heartbeat → must be alive")
+	}
+}
+
 func TestProcessReplies_Once_NoRule(t *testing.T) {
 	s, r, dir := newSpool(t)
 	id, _ := s.Write(Request{Category: "dotenv", IdentityKey: "chainkey3"})

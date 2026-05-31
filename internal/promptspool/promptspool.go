@@ -151,22 +151,51 @@ func (s *Spool) ProcessReplies() (int, error) {
 }
 
 func (s *Spool) apply(req Request, reply Reply) error {
-	if reply.Scope != "always" {
-		return nil // "once" (or anything else) leaves no persistent rule
+	// "once" (default) leaves no persistent rule. "always" matches the exact
+	// process chain; "always-exe" matches just the leaf executable (broader —
+	// any launch context of that program).
+	var identityKey string
+	var kind rules.IdentityKind
+	switch reply.Scope {
+	case "always":
+		identityKey, kind = req.IdentityKey, rules.IKChain
+	case "always-exe":
+		identityKey, kind = req.ExeOnlyKey, rules.IKExeOnly
+	default:
+		return nil
+	}
+	if identityKey == "" || req.Category == "" {
+		return nil // not enough context to build a rule
 	}
 	verdict := rules.VerdictAllow
 	if reply.Decision == "deny" {
 		verdict = rules.VerdictDeny
 	}
-	if req.IdentityKey == "" || req.Category == "" {
-		return nil // not enough context to build a rule
-	}
 	_, err := s.rules.Insert(rules.Rule{
 		FileKey: req.Category, FileKeyKind: rules.FKCategory,
-		IdentityKey: req.IdentityKey, IdentityKind: rules.IKChain,
+		IdentityKey: identityKey, IdentityKind: kind,
 		Verdict: verdict, CreatedBy: "prompt",
 	})
 	return err
+}
+
+// Heartbeat file the menu bar helper touches periodically; the extension uses
+// its freshness to decide whether a prompt UI is available (see HelperAlive).
+const heartbeatName = ".helper-alive"
+const heartbeatTTL = 6 * time.Second
+
+// HeartbeatPath is where the helper should touch its liveness file.
+func (s *Spool) HeartbeatPath() string { return filepath.Join(s.dir, heartbeatName) }
+
+// HelperAlive reports whether the menu bar helper has touched its heartbeat
+// recently. When false, the engine fails OPEN (allow-first) rather than
+// silently denying in-scope reads no one can approve.
+func (s *Spool) HelperAlive() bool {
+	fi, err := os.Stat(filepath.Join(s.dir, heartbeatName))
+	if err != nil {
+		return false
+	}
+	return time.Since(fi.ModTime()) < heartbeatTTL
 }
 
 // Watch polls for replies until ctx is cancelled.

@@ -170,6 +170,29 @@ func TestEngine_MonitorOnly_AllowsButStillPrompts(t *testing.T) {
 	}
 }
 
+func TestEngine_NoHelper_AllowsFirst(t *testing.T) {
+	home := t.TempDir()
+	env := writeEnv(t, home)
+	eng, _ := tempEngine(t, home, fakeResolver{42: {Exe: "/usr/bin/node", Chain: []string{"/usr/bin/node"}}})
+	eng.SetHelperPresent(func() bool { return false }) // prompt UI down
+
+	// Would be deny-first, but with no helper to approve it we fail open.
+	if got := eng.Decide(hook.Event{Path: env, PID: 42}); got != hook.Allow {
+		t.Fatalf("no-helper must allow-first, got %v", got)
+	}
+}
+
+func TestEngine_HelperPresent_DeniesFirst(t *testing.T) {
+	home := t.TempDir()
+	env := writeEnv(t, home)
+	eng, _ := tempEngine(t, home, fakeResolver{42: {Exe: "/usr/bin/node", Chain: []string{"/usr/bin/node"}}})
+	eng.SetHelperPresent(func() bool { return true })
+
+	if got := eng.Decide(hook.Event{Path: env, PID: 42}); got != hook.Deny {
+		t.Fatalf("helper present must deny-first, got %v", got)
+	}
+}
+
 func TestEngine_WriteOnlyFastAllow(t *testing.T) {
 	home := t.TempDir()
 	eng, _ := tempEngine(t, home, fakeResolver{1: {Exe: "/bin/cat"}})

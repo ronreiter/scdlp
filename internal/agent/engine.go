@@ -45,6 +45,11 @@ type Config struct {
 	// Scope decides which files are inspected at all: a file is checked only if
 	// its base name matches the configured scan list (default ["env"]).
 	Scope config.Config
+
+	// HelperPresent reports whether the user-facing prompt UI is available. When
+	// it returns false, an unknown in-scope read fails OPEN (allow-first) rather
+	// than being denied with no way to approve it. Nil ⇒ always-present.
+	HelperPresent func() bool
 }
 
 type Engine struct {
@@ -74,6 +79,10 @@ func New(cfg Config) *Engine {
 	go e.auditWriter()
 	return e
 }
+
+// SetHelperPresent wires the prompt-UI liveness check after construction. Call
+// before Run starts (no concurrent access).
+func (e *Engine) SetHelperPresent(f func() bool) { e.cfg.HelperPresent = f }
 
 func (e *Engine) auditWriter() {
 	defer func() {
@@ -197,6 +206,14 @@ func (e *Engine) decideInner(ev hook.Event) (hook.Decision, *audit.Event) {
 		audited.RuleID = &r.ID
 		return hook.Deny, audited
 	default:
+		// Unknown (process, category) → prompt. Deny-first only if a prompt UI
+		// is available to approve it; if the helper is down, fail OPEN so we
+		// don't silently block reads no one can allow.
+		if e.cfg.HelperPresent != nil && !e.cfg.HelperPresent() {
+			audited.Verdict = "allow-no-helper"
+			e.cfg.Logger.Printf("no prompt helper; allowing in-scope read path=%q pid=%d", ev.Path, ev.PID)
+			return hook.Allow, audited
+		}
 		audited.Verdict = "deny"
 		e.cfg.Bus.Publish(PromptEvent{
 			FilePath: ev.Path, Category: category,

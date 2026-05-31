@@ -106,6 +106,10 @@ func main() {
 	if err != nil {
 		log.Printf("prompt spool unavailable: %v (prompts will only be logged)", err)
 	}
+	// Fail open when no prompt helper is alive to approve denials.
+	if spool != nil {
+		eng.SetHelperPresent(spool.HelperAlive)
+	}
 
 	if *sockPath != "" {
 		be := newBackend(r, a)

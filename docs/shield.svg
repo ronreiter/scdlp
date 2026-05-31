@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" role="img" aria-label="SCDLP shield">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5b8cff"/>
+      <stop offset="1" stop-color="#2f5bd6"/>
+    </linearGradient>
+  </defs>
+  <path d="M60 6 L104 22 V58 C104 88 84 108 60 116 C36 108 16 88 16 58 V22 Z"
+        fill="url(#g)" stroke="#9bb8ff" stroke-width="2"/>
+  <path d="M60 16 L94 28 V58 C94 82 78 99 60 106 C42 99 26 82 26 58 V28 Z"
+        fill="#0e1730" opacity="0.55"/>
+  <path d="M44 60 l11 11 22 -24" fill="none" stroke="#ffffff" stroke-width="7"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

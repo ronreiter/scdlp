@@ -1,10 +1,20 @@
-# scdlp
+<p align="center">
+  <img src="docs/shield.svg" width="96" height="96" alt="SCDLP shield logo">
+</p>
 
-**Anti-supply-chain DLP for macOS.**
+<h1 align="center">Supply Chain DLP (SCDLP)</h1>
 
-Hooks every file open via Apple's Endpoint Security framework, classifies the file's first 4 KiB in real time, and blocks unknown processes from reading credentials — with a Little-Snitch-style allow/deny prompt to the user. Defeats the npm/pip/cargo postinstall pattern that reads `~/.aws/credentials`, `~/.ssh/id_*`, `~/.npmrc`, etc.
+<p align="center"><strong>Anti-supply-chain DLP for macOS.</strong></p>
 
-> **Status:** v1 core (this repo) lands the Go-side engine, classifier, rules/audit stores, IPC, daemon, and CLI. The real Endpoint Security System Extension (C/Swift/Xcode) is a follow-up plan because it depends on Apple's ESF entitlement and the signing/notarization toolchain.
+<p align="center">
+  🌐 <a href="https://ronreiter.github.io/scdlp/">Website</a> &nbsp;·&nbsp;
+  ⬇️ <a href="https://github.com/ronreiter/scdlp/releases/latest/download/scdlp.dmg">Download scdlp.dmg</a> &nbsp;·&nbsp;
+  📦 <a href="https://github.com/ronreiter/scdlp/releases">Releases</a>
+</p>
+
+SCDLP is a signed macOS **Endpoint Security system extension** that watches every file open and blocks unknown processes from reading your credentials — `.env` files, cloud keys (AWS/GCP/Azure), SSH/GPG keys, package-manager and git tokens, kubeconfigs — with a Little-Snitch-style allow/deny prompt. It defeats the npm/pip/cargo postinstall pattern that reads `~/.aws/credentials`, `~/.ssh/id_*`, `~/.npmrc`, etc., and stops chatty AI agents from sweeping up your secrets.
+
+A menu-bar app provides the approval prompts and a dashboard (History · Policy · Trusted Apps · Rules), plus a one-click kill switch.
 
 Sibling project: [`stasher`](https://github.com/ronreiter/stasher) — the FUSE-based flavor with hardware-bound encryption around `.env` files.
 
@@ -16,7 +26,7 @@ Three local processes:
 
 - **`scdlp-agent`** — daemon, owns the SQLite at `~/.scdlp/`, runs the decision pipeline.
 - **`scdlp`** — CLI, talks to the daemon over a Unix socket.
-- *(future)* **scdlp-helper** — Swift menubar app for prompts.
+- **scdlp-helper** — Swift menu-bar app: approval prompts + dashboard (History / Policy / Trusted Apps / Rules) + kill switch.
 
 ## Build
 

@@ -31,8 +31,35 @@ type PolicyEntry struct {
 type Config struct {
 	// Policy is the ordered glob→action list (first match wins).
 	Policy []PolicyEntry `json:"policy"`
+	// TrustedApps are application names whose process ancestry is allowed to read
+	// any matched file without prompting (e.g. "Moltty"). Matched against each
+	// element of the process chain, by ".app" bundle name or executable basename.
+	TrustedApps []string `json:"trusted_apps,omitempty"`
 	// ScanNameSubstrings is the legacy scope knob; migrated to Policy on load.
 	ScanNameSubstrings []string `json:"scan_name_substrings,omitempty"`
+}
+
+// TrustsChain reports whether any process in the ancestry chain belongs to a
+// trusted app. Each chain entry is an absolute executable path; a trust match
+// is a case-insensitive "/<app>.app/" bundle hit or an exact basename match.
+func (c Config) TrustsChain(chain []string) bool {
+	if len(c.TrustedApps) == 0 {
+		return false
+	}
+	for _, exe := range chain {
+		low := strings.ToLower(exe)
+		base := strings.ToLower(filepath.Base(exe))
+		for _, app := range c.TrustedApps {
+			a := strings.ToLower(strings.TrimSpace(app))
+			if a == "" {
+				continue
+			}
+			if base == a || strings.Contains(low, "/"+a+".app/") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Default is the built-in policy: prompt on a broad set of common credential

@@ -223,6 +223,70 @@ func TestEngine_Disabled_AllowsEverything(t *testing.T) {
 	}
 }
 
+func TestEngine_RepromptCooldown_SuppressesRepeatPrompts(t *testing.T) {
+	home := t.TempDir()
+	env := writeEnv(t, home)
+	eng, bus := tempEngine(t, home, fakeResolver{42: {Exe: "/usr/bin/node", Chain: []string{"/usr/bin/node"}}})
+	eng.SetHelperPresent(func() bool { return true })
+	now := time.Unix(1000, 0)
+	eng.SetClock(func() time.Time { return now })
+
+	// First read: deny-first + a prompt is published.
+	if d := eng.Decide(hook.Event{Path: env, PID: 42}); d != hook.Deny {
+		t.Fatalf("want deny, got %v", d)
+	}
+	select {
+	case <-bus.C():
+	case <-time.After(time.Second):
+		t.Fatal("expected first prompt")
+	}
+
+	// Repeat within the cooldown window: still denied, but must NOT re-prompt.
+	now = now.Add(5 * time.Second)
+	if d := eng.Decide(hook.Event{Path: env, PID: 42}); d != hook.Deny {
+		t.Fatalf("want deny on repeat, got %v", d)
+	}
+	select {
+	case <-bus.C():
+		t.Fatal("repeat within cooldown must not re-prompt (this is the flood)")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	// Once the cooldown elapses, prompting resumes.
+	now = now.Add(2 * time.Minute)
+	if d := eng.Decide(hook.Event{Path: env, PID: 42}); d != hook.Deny {
+		t.Fatalf("want deny after cooldown, got %v", d)
+	}
+	select {
+	case <-bus.C():
+	case <-time.After(time.Second):
+		t.Fatal("expected a fresh prompt after cooldown expired")
+	}
+}
+
+func TestEngine_TrustedApp_AllowsWithoutPrompt(t *testing.T) {
+	home := t.TempDir()
+	env := writeEnv(t, home)
+	// A background reader whose own exe is an unstable/versioned helper, but whose
+	// ancestry includes the trusted GUI app (Moltty). This is exactly the case
+	// that floods: per-exe rules never match, but trusting the app does.
+	eng, bus := tempEngine(t, home, fakeResolver{42: {
+		Exe:   "/Applications/Moltty.app/Contents/MacOS/2.1.159",
+		Chain: []string{"/Applications/Moltty.app/Contents/MacOS/2.1.159", "/bin/zsh", "/Applications/Moltty.app/Contents/MacOS/Moltty"},
+	}})
+	eng.SetHelperPresent(func() bool { return true })
+	eng.SetPolicy(config.Config{Policy: config.Default().Policy, TrustedApps: []string{"Moltty"}})
+
+	if d := eng.Decide(hook.Event{Path: env, PID: 42}); d != hook.Allow {
+		t.Fatalf("trusted-app read must be allowed, got %v", d)
+	}
+	select {
+	case <-bus.C():
+		t.Fatal("trusted-app read must not prompt")
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
 func TestEngine_WriteOnlyFastAllow(t *testing.T) {
 	home := t.TempDir()
 	eng, _ := tempEngine(t, home, fakeResolver{1: {Exe: "/bin/cat"}})

@@ -47,6 +47,32 @@ func TestWrite_CreatesRequestFile(t *testing.T) {
 	}
 }
 
+func TestWrite_DedupsSameIdentityCategory(t *testing.T) {
+	s, _, dir := newSpool(t)
+	req := Request{Path: "/Users/x/.env", Category: "env-file", IdentityKey: "chainK"}
+	id1, _ := s.Write(req)
+	id2, _ := s.Write(req) // same (identity, category) while first is outstanding
+	if id1 == "" {
+		t.Fatal("first write should produce a request")
+	}
+	if id2 != "" {
+		t.Fatalf("duplicate write must be deduped (empty id), got %q", id2)
+	}
+	reqs, _ := filepath.Glob(filepath.Join(dir, "*.req.json"))
+	if len(reqs) != 1 {
+		t.Fatalf("want exactly 1 request file, got %d", len(reqs))
+	}
+
+	// After the reply is processed, the same key may prompt again.
+	writeReply(t, dir, id1, "deny", "once")
+	if _, err := s.ProcessReplies(); err != nil {
+		t.Fatal(err)
+	}
+	if id3, _ := s.Write(req); id3 == "" {
+		t.Fatal("after the reply is handled, a new prompt should be allowed")
+	}
+}
+
 func writeReply(t *testing.T, dir, id, decision, scope string) {
 	t.Helper()
 	b, _ := json.Marshal(Reply{Decision: decision, Scope: scope})

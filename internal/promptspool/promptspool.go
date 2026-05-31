@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -45,6 +46,13 @@ type Spool struct {
 	dir   string
 	rules *rules.Store
 	log   *log.Logger
+
+	mu      sync.Mutex
+	pending map[string]bool // dedup key (identity|category) → request outstanding
+}
+
+func dedupKey(identityKey, category string) string {
+	return identityKey + "|" + category
 }
 
 // New creates the spool directory (group/other-writable so the user-session app
@@ -58,11 +66,23 @@ func New(dir string, r *rules.Store, logger *log.Logger) (*Spool, error) {
 	}
 	// MkdirAll is subject to umask; force the mode so the console user can write.
 	_ = os.Chmod(dir, 0o777)
-	return &Spool{dir: dir, rules: r, log: logger}, nil
+	return &Spool{dir: dir, rules: r, log: logger, pending: map[string]bool{}}, nil
 }
 
-// Write persists a prompt request and returns its id.
+// Write persists a prompt request and returns its id. Repeated requests for the
+// same (identity, category) while one is still outstanding are deduped (return
+// "", nil) so a process reading a file in a loop raises a single prompt, not
+// hundreds.
 func (s *Spool) Write(req Request) (string, error) {
+	key := dedupKey(req.IdentityKey, req.Category)
+	s.mu.Lock()
+	if s.pending[key] {
+		s.mu.Unlock()
+		return "", nil
+	}
+	s.pending[key] = true
+	s.mu.Unlock()
+
 	if req.ID == "" {
 		req.ID = uuid.NewString()
 	}
@@ -77,12 +97,20 @@ func (s *Spool) Write(req Request) (string, error) {
 	final := filepath.Join(s.dir, req.ID+".req.json")
 	tmp := final + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		s.clearPending(key)
 		return "", err
 	}
 	if err := os.Rename(tmp, final); err != nil {
+		s.clearPending(key)
 		return "", err
 	}
 	return req.ID, nil
+}
+
+func (s *Spool) clearPending(key string) {
+	s.mu.Lock()
+	delete(s.pending, key)
+	s.mu.Unlock()
 }
 
 // ProcessReplies scans for reply files, applies each (inserting a rule when the
@@ -112,6 +140,9 @@ func (s *Spool) ProcessReplies() (int, error) {
 		if err := s.apply(req, reply); err != nil {
 			s.log.Printf("apply reply id=%s: %v", id, err)
 		}
+		// Allow this (identity, category) to prompt again (unless "always"
+		// created a rule, in which case future reads won't reach the prompt).
+		s.clearPending(dedupKey(req.IdentityKey, req.Category))
 		os.Remove(replyPath)
 		os.Remove(reqPath)
 		n++

@@ -12,40 +12,19 @@ let policyPath = "\(controlDir)/policy.json"
 let historyPath = "\(controlDir)/history.json"
 let rulesPath = "\(controlDir)/rules.json"
 let commandsDir = "\(controlDir)/commands"
+let policyActions = ["prompt", "allow", "block"]
 
 // ───── shared models ────────────────────────────────────────────────────────
 
 struct Request: Codable {
-    let id: String
+    let id, exe, human_chain, path, category: String
     let pid: Int
-    let exe: String
-    let human_chain: String
-    let path: String
-    let category: String
 }
-struct Reply: Codable {
-    let decision: String // "allow" | "deny"
-    let scope: String    // "once" | "always" | "always-exe"
-}
-struct PolicyEntry: Codable {
-    let glob: String
-    let action: String
-}
+struct Reply: Codable { let decision, scope: String }
+struct PolicyEntry: Codable { var glob: String; var action: String }
 struct PolicyDoc: Codable { var policy: [PolicyEntry] }
-struct HistoryRow: Codable {
-    let ts: Int
-    let verdict: String
-    let path: String
-    let process: String
-    let category: String
-}
-struct RuleRow: Codable {
-    let id: Int
-    let glob: String
-    let identity_kind: String
-    let verdict: String
-    let created_by: String
-}
+struct HistoryRow: Codable { let ts: Int; let verdict, path, process, category: String }
+struct RuleRow: Codable { let id: Int; let glob, identity_kind, verdict, created_by: String }
 
 func loadJSON<T: Decodable>(_ path: String, _ type: T.Type) -> T? {
     guard let data = FileManager.default.contents(atPath: path) else { return nil }
@@ -54,33 +33,34 @@ func loadJSON<T: Decodable>(_ path: String, _ type: T.Type) -> T? {
 
 // ───── dashboard window ─────────────────────────────────────────────────────
 
-final class Dashboard: NSObject, NSWindowDelegate, NSTableViewDataSource {
+final class Dashboard: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
     var window: NSWindow!
     let historyTable = NSTableView()
     let rulesTable = NSTableView()
-    let policyView = NSTextView()
+    let policyTable = NSTableView()
     var history: [HistoryRow] = []
     var rules: [RuleRow] = []
+    var policy: [PolicyEntry] = []
     var refresh: Timer?
 
     func show() {
         if window == nil { build() }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        reload()
-        refresh = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.reload() }
+        reload(reloadPolicy: true)
+        refresh = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            self?.reload(reloadPolicy: false) // don't clobber in-progress edits
+        }
     }
-
     func windowWillClose(_ n: Notification) { refresh?.invalidate(); refresh = nil }
 
     func build() {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 460),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 740, height: 460),
                           styleMask: [.titled, .closable, .resizable, .miniaturizable],
                           backing: .buffered, defer: false)
         window.title = "scdlp"
         window.delegate = self
         window.center()
-
         let tabs = NSTabView(frame: window.contentView!.bounds)
         tabs.autoresizingMask = [.width, .height]
         tabs.addTabViewItem(historyTab())
@@ -89,128 +69,117 @@ final class Dashboard: NSObject, NSWindowDelegate, NSTableViewDataSource {
         window.contentView!.addSubview(tabs)
     }
 
-    func column(_ id: String, _ title: String, _ w: CGFloat) -> NSTableColumn {
+    func col(_ id: String, _ title: String, _ w: CGFloat) -> NSTableColumn {
         let c = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
-        c.title = title
-        c.width = w
+        c.title = title; c.width = w
         return c
     }
-
-    func scrolling(_ v: NSView) -> NSScrollView {
-        let s = NSScrollView()
-        s.hasVerticalScroller = true
-        s.documentView = v
+    func scrolling(_ v: NSView, _ frame: NSRect) -> NSScrollView {
+        let s = NSScrollView(frame: frame)
+        s.hasVerticalScroller = true; s.documentView = v
         s.autoresizingMask = [.width, .height]
         return s
     }
+    func tab(_ label: String, _ build: (NSView) -> Void) -> NSTabViewItem {
+        let item = NSTabViewItem(); item.label = label
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: 740, height: 430))
+        build(v); item.view = v
+        return item
+    }
 
-    // History tab — read-only table.
     func historyTab() -> NSTabViewItem {
-        historyTable.addTableColumn(column("time", "Time", 140))
-        historyTable.addTableColumn(column("verdict", "Verdict", 70))
-        historyTable.addTableColumn(column("path", "File", 320))
-        historyTable.addTableColumn(column("process", "Process", 160))
-        historyTable.dataSource = self
+        historyTable.addTableColumn(col("time", "Time", 130))
+        historyTable.addTableColumn(col("verdict", "Verdict", 70))
+        historyTable.addTableColumn(col("path", "File", 340))
+        historyTable.addTableColumn(col("process", "Process", 160))
+        historyTable.dataSource = self; historyTable.delegate = self
         historyTable.usesAlternatingRowBackgroundColors = true
-        let item = NSTabViewItem(); item.label = "History"
-        let v = NSView(frame: NSRect(x: 0, y: 0, width: 720, height: 430))
-        let sc = scrolling(historyTable); sc.frame = v.bounds
-        v.addSubview(sc); item.view = v
-        return item
+        return tab("History") { $0.addSubview(scrolling(historyTable, $0.bounds)) }
     }
 
-    // Policy tab — editable text (one "action glob" per line) + Save.
     func policyTab() -> NSTabViewItem {
-        let item = NSTabViewItem(); item.label = "Policy"
-        let v = NSView(frame: NSRect(x: 0, y: 0, width: 720, height: 430))
-
-        let save = NSButton(title: "Save", target: self, action: #selector(savePolicy))
-        save.bezelStyle = .rounded
-        save.frame = NSRect(x: 720 - 90, y: 8, width: 80, height: 28)
-        save.autoresizingMask = [.minXMargin]
-
-        let label = NSTextField(labelWithString: "One rule per line:  <prompt|allow|block>  <glob>")
-        label.frame = NSRect(x: 10, y: 10, width: 520, height: 22)
-        label.textColor = .secondaryLabelColor
-
-        let sc = scrolling(policyView)
-        sc.frame = NSRect(x: 0, y: 44, width: 720, height: 386)
-        policyView.isRichText = false
-        policyView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        policyView.isVerticallyResizable = true
-        policyView.textContainer?.widthTracksTextView = true
-
-        v.addSubview(sc); v.addSubview(label); v.addSubview(save)
-        item.view = v
-        return item
+        policyTable.addTableColumn(col("glob", "File / glob", 470))
+        policyTable.addTableColumn(col("action", "Action", 130))
+        policyTable.dataSource = self; policyTable.delegate = self
+        policyTable.usesAlternatingRowBackgroundColors = true
+        return tab("Policy") { v in
+            v.addSubview(scrolling(policyTable, NSRect(x: 0, y: 44, width: 740, height: 386)))
+            let add = NSButton(title: "Add", target: self, action: #selector(addPolicy))
+            add.frame = NSRect(x: 10, y: 8, width: 70, height: 28)
+            let rem = NSButton(title: "Remove", target: self, action: #selector(removePolicy))
+            rem.frame = NSRect(x: 86, y: 8, width: 80, height: 28)
+            let save = NSButton(title: "Save", target: self, action: #selector(savePolicy))
+            save.bezelStyle = .rounded; save.keyEquivalent = "\r"
+            save.frame = NSRect(x: 740 - 90, y: 8, width: 80, height: 28)
+            save.autoresizingMask = [.minXMargin]
+            v.addSubview(add); v.addSubview(rem); v.addSubview(save)
+        }
     }
 
-    // Rules tab — table + Revoke.
     func rulesTab() -> NSTabViewItem {
-        rulesTable.addTableColumn(column("glob", "Glob", 220))
-        rulesTable.addTableColumn(column("kind", "Match", 90))
-        rulesTable.addTableColumn(column("verdict", "Verdict", 70))
-        rulesTable.addTableColumn(column("by", "By", 90))
-        rulesTable.dataSource = self
+        rulesTable.addTableColumn(col("glob", "Glob", 230))
+        rulesTable.addTableColumn(col("kind", "Match", 90))
+        rulesTable.addTableColumn(col("verdict", "Verdict", 70))
+        rulesTable.addTableColumn(col("by", "By", 90))
+        rulesTable.dataSource = self; rulesTable.delegate = self
         rulesTable.usesAlternatingRowBackgroundColors = true
-        let item = NSTabViewItem(); item.label = "Rules"
-        let v = NSView(frame: NSRect(x: 0, y: 0, width: 720, height: 430))
-        let revoke = NSButton(title: "Revoke Selected", target: self, action: #selector(revokeSelected))
-        revoke.bezelStyle = .rounded
-        revoke.frame = NSRect(x: 720 - 160, y: 8, width: 150, height: 28)
-        revoke.autoresizingMask = [.minXMargin]
-        let sc = scrolling(rulesTable)
-        sc.frame = NSRect(x: 0, y: 44, width: 720, height: 386)
-        v.addSubview(sc); v.addSubview(revoke)
-        item.view = v
-        return item
+        return tab("Rules") { v in
+            v.addSubview(scrolling(rulesTable, NSRect(x: 0, y: 44, width: 740, height: 386)))
+            let revoke = NSButton(title: "Revoke Selected", target: self, action: #selector(revokeSelected))
+            revoke.bezelStyle = .rounded
+            revoke.frame = NSRect(x: 740 - 160, y: 8, width: 150, height: 28)
+            revoke.autoresizingMask = [.minXMargin]
+            v.addSubview(revoke)
+        }
     }
 
-    func reload() {
+    func reload(reloadPolicy: Bool) {
         history = loadJSON(historyPath, [HistoryRow].self) ?? []
         rules = loadJSON(rulesPath, [RuleRow].self) ?? []
-        historyTable.reloadData()
-        rulesTable.reloadData()
-        // Load policy text only when the editor isn't focused (don't clobber edits).
-        if window.firstResponder !== policyView, let doc = loadJSON(policyPath, PolicyDoc.self) {
-            policyView.string = doc.policy.map { "\($0.action) \($0.glob)" }.joined(separator: "\n")
+        historyTable.reloadData(); rulesTable.reloadData()
+        if reloadPolicy, let doc = loadJSON(policyPath, PolicyDoc.self) {
+            policy = doc.policy
+            policyTable.reloadData()
         }
     }
 
-    @objc func savePolicy() {
-        var entries: [PolicyEntry] = []
-        for raw in policyView.string.split(separator: "\n") {
-            let parts = raw.split(separator: " ", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
-            guard parts.count == 2, !parts[1].isEmpty else { continue }
-            let action = ["prompt", "allow", "block"].contains(parts[0]) ? parts[0] : "prompt"
-            entries.append(PolicyEntry(glob: parts[1], action: action))
-        }
-        if let data = try? JSONEncoder().encode(PolicyDoc(policy: entries)) {
-            try? data.write(to: URL(fileURLWithPath: policyPath))
+    // NSTableViewDataSource
+    func numberOfRows(in t: NSTableView) -> Int {
+        switch t {
+        case historyTable: return history.count
+        case rulesTable: return rules.count
+        default: return policy.count
         }
     }
 
-    @objc func revokeSelected() {
-        let row = rulesTable.selectedRow
-        guard row >= 0 && row < rules.count else { return }
-        let id = rules[row].id
-        try? FileManager.default.createDirectory(atPath: commandsDir, withIntermediateDirectories: true)
-        FileManager.default.createFile(atPath: "\(commandsDir)/revoke-\(id).cmd", contents: Data())
-    }
-
-    // NSTableViewDataSource (cell-based).
-    func numberOfRows(in t: NSTableView) -> Int { t === historyTable ? history.count : rules.count }
-
-    func tableView(_ t: NSTableView, objectValueFor col: NSTableColumn?, row: Int) -> Any? {
+    // NSTableViewDelegate — view-based cells.
+    func tableView(_ t: NSTableView, viewFor col: NSTableColumn?, row: Int) -> NSView? {
         let id = col?.identifier.rawValue ?? ""
+        if t === policyTable {
+            if id == "glob" {
+                let f = NSTextField(string: policy[row].glob)
+                f.isEditable = true; f.isBordered = false; f.backgroundColor = .clear
+                f.target = self; f.action = #selector(globEdited(_:))
+                f.cell?.sendsActionOnEndEditing = true
+                return f
+            }
+            let p = NSPopUpButton(frame: .zero, pullsDown: false)
+            p.addItems(withTitles: policyActions)
+            p.selectItem(withTitle: policy[row].action)
+            p.target = self; p.action = #selector(actionChanged(_:))
+            return p
+        }
+        return Self.label(text(for: t, id: id, row: row))
+    }
+
+    func text(for t: NSTableView, id: String, row: Int) -> String {
         if t === historyTable {
             let h = history[row]
             switch id {
             case "time": return Self.fmt(h.ts)
             case "verdict": return h.verdict
             case "path": return h.path
-            case "process": return h.process
-            default: return ""
+            default: return h.process
             }
         }
         let r = rules[row]
@@ -218,14 +187,50 @@ final class Dashboard: NSObject, NSWindowDelegate, NSTableViewDataSource {
         case "glob": return r.glob
         case "kind": return r.identity_kind
         case "verdict": return r.verdict
-        case "by": return r.created_by
-        default: return ""
+        default: return r.created_by
         }
     }
 
-    static let df: DateFormatter = {
-        let f = DateFormatter(); f.dateFormat = "MM-dd HH:mm:ss"; return f
-    }()
+    static func label(_ s: String) -> NSTextField {
+        let f = NSTextField(labelWithString: s)
+        f.lineBreakMode = .byTruncatingMiddle
+        return f
+    }
+
+    // Policy editing
+    @objc func globEdited(_ sender: NSTextField) {
+        let r = policyTable.row(for: sender)
+        if r >= 0 && r < policy.count { policy[r].glob = sender.stringValue }
+    }
+    @objc func actionChanged(_ sender: NSPopUpButton) {
+        let r = policyTable.row(for: sender)
+        if r >= 0 && r < policy.count { policy[r].action = sender.titleOfSelectedItem ?? "prompt" }
+    }
+    @objc func addPolicy() {
+        policy.append(PolicyEntry(glob: "", action: "prompt"))
+        policyTable.reloadData()
+        policyTable.editColumn(0, row: policy.count - 1, with: nil, select: true)
+    }
+    @objc func removePolicy() {
+        let r = policyTable.selectedRow
+        guard r >= 0 && r < policy.count else { return }
+        policy.remove(at: r); policyTable.reloadData()
+    }
+    @objc func savePolicy() {
+        let entries = policy.filter { !$0.glob.trimmingCharacters(in: .whitespaces).isEmpty }
+        if let data = try? JSONEncoder().encode(PolicyDoc(policy: entries)) {
+            try? data.write(to: URL(fileURLWithPath: policyPath))
+        }
+    }
+
+    @objc func revokeSelected() {
+        let r = rulesTable.selectedRow
+        guard r >= 0 && r < rules.count else { return }
+        try? FileManager.default.createDirectory(atPath: commandsDir, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: "\(commandsDir)/revoke-\(rules[r].id).cmd", contents: Data())
+    }
+
+    static let df: DateFormatter = { let f = DateFormatter(); f.dateFormat = "MM-dd HH:mm:ss"; return f }()
     static func fmt(_ ts: Int) -> String { df.string(from: Date(timeIntervalSince1970: TimeInterval(ts))) }
 }
 
@@ -244,7 +249,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
         NSApp.setActivationPolicy(.accessory)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "🛡"
+        // White (template) shield that adapts to the menu bar, not a color emoji.
+        if let img = NSImage(systemSymbolName: "shield.fill", accessibilityDescription: "scdlp") {
+            img.isTemplate = true
+            statusItem.button?.image = img
+        } else {
+            statusItem.button?.title = "scdlp"
+        }
         rebuildMenu()
 
         let hb = DispatchSource.makeTimerSource(queue: workQ)
@@ -270,7 +281,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.addItem(withTitle: "Quit scdlp-helper", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         statusItem.menu = m
     }
-
     @objc func openDashboard() { dashboard.show() }
 
     func scan() {
@@ -294,9 +304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func present(_ req: Request, replyPath: String) {
         if busy || FileManager.default.fileExists(atPath: replyPath) { return }
-        busy = true
-        defer { busy = false }
-
+        busy = true; defer { busy = false }
         let exe = (req.exe as NSString).lastPathComponent
         let alert = NSAlert()
         alert.alertStyle = .critical
@@ -309,26 +317,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Deny")
         alert.addButton(withTitle: "Allow")
         let scope = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 340, height: 25), pullsDown: false)
-        scope.addItems(withTitles: ["Just this once",
-                                    "Always — for \(exe) (any launch)",
-                                    "Always — for this exact process"])
+        scope.addItems(withTitles: ["Just this once", "Always — for \(exe) (any launch)", "Always — for this exact process"])
         scope.selectItem(at: 1)
         alert.accessoryView = scope
-
         NSApp.activate(ignoringOtherApps: true)
         let resp = alert.runModal()
         let decision = (resp == .alertSecondButtonReturn) ? "allow" : "deny"
-        let scopeStr: String
-        switch scope.indexOfSelectedItem {
-        case 0: scopeStr = "once"
-        case 2: scopeStr = "always"
-        default: scopeStr = "always-exe"
-        }
+        let scopeStr = ["once", "always-exe", "always"][min(max(scope.indexOfSelectedItem, 0), 2)]
         if let data = try? JSONEncoder().encode(Reply(decision: decision, scope: scopeStr)) {
             try? data.write(to: URL(fileURLWithPath: replyPath))
         }
-        decisions += 1
-        rebuildMenu()
+        decisions += 1; rebuildMenu()
     }
 }
 

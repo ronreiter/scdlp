@@ -22,6 +22,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$REPO/helper/Info.plist" "$APP/Contents/Info.plist"
 mv "$DIST/scdlp-helper" "$APP/Contents/MacOS/scdlp-helper"
 chmod +x "$APP/Contents/MacOS/scdlp-helper"
+# Brand icon (asterisk shield) used by the About tab + approval prompt.
+cp "$REPO/helper/shield.png"    "$APP/Contents/Resources/shield.png"
+cp "$REPO/helper/shield@2x.png" "$APP/Contents/Resources/shield@2x.png"
 
 TIMESTAMP_FLAG="--timestamp=none"
 [ "$SIGN_ID" != "-" ] && TIMESTAMP_FLAG="--timestamp"

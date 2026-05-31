@@ -147,6 +147,7 @@ final class Dashboard: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTabl
     func tab(_ label: String, _ build: (NSView) -> Void) -> NSTabViewItem {
         let item = NSTabViewItem(); item.label = label
         let v = NSView(frame: NSRect(x: 0, y: 0, width: 740, height: 430))
+        v.autoresizingMask = [.width, .height]
         build(v); item.view = v
         return item
     }
@@ -313,15 +314,19 @@ final class Dashboard: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTabl
         return tab("Trusted Apps") { v in
             let hint = NSTextField(wrappingLabelWithString:
                 "Apps listed here may read any protected file without prompting — matched against the whole process tree. Use Browse… to add one.")
-            hint.frame = NSRect(x: 12, y: 392, width: 716, height: 32)
+            hint.frame = NSRect(x: 12, y: 366, width: 716, height: 36)
             hint.textColor = .secondaryLabelColor
+            hint.autoresizingMask = [.width, .minYMargin] // pin below the tab bar
             v.addSubview(hint)
-            v.addSubview(scrolling(trustedTable, NSRect(x: 12, y: 48, width: 716, height: 336)))
+            let scroll = scrolling(trustedTable, NSRect(x: 12, y: 48, width: 716, height: 308))
+            v.addSubview(scroll)
             let browse = NSButton(title: "Browse…", target: self, action: #selector(browseTrusted))
             browse.bezelStyle = .rounded
             browse.frame = NSRect(x: 12, y: 8, width: 100, height: 28)
+            browse.autoresizingMask = [.maxYMargin]
             let rem = NSButton(title: "Remove", target: self, action: #selector(removeTrusted))
             rem.frame = NSRect(x: 118, y: 8, width: 90, height: 28)
+            rem.autoresizingMask = [.maxYMargin]
             v.addSubview(browse); v.addSubview(rem)
         }
     }

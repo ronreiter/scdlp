@@ -41,18 +41,25 @@ final class Dashboard: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTabl
     var history: [HistoryRow] = []
     var rules: [RuleRow] = []
     var policy: [PolicyEntry] = []
-    var refresh: Timer?
+    // GCD timer (not a run-loop NSTimer, which doesn't fire reliably in a
+    // LaunchAgent-launched app) so History/Rules update live while open.
+    var refresh: DispatchSourceTimer?
 
     func show() {
         if window == nil { build() }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         reload(reloadPolicy: true)
-        refresh = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            self?.reload(reloadPolicy: false) // don't clobber in-progress edits
+        let t = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "io.sentra.scdlp.helper.ui"))
+        t.schedule(deadline: .now() + 2, repeating: 2)
+        t.setEventHandler { [weak self] in
+            DispatchQueue.main.async { self?.reload(reloadPolicy: false) } // UI on main; keep edits
         }
+        t.resume()
+        refresh = t
     }
-    func windowWillClose(_ n: Notification) { refresh?.invalidate(); refresh = nil }
+    func windowWillClose(_ n: Notification) { refresh?.cancel(); refresh = nil }
+    func windowDidBecomeKey(_ n: Notification) { reload(reloadPolicy: false) }
 
     func build() {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 740, height: 460),

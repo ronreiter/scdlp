@@ -26,8 +26,10 @@ import (
 
 	"github.com/ronreiter/scdlp/internal/agent"
 	"github.com/ronreiter/scdlp/internal/audit"
+	"github.com/ronreiter/scdlp/internal/config"
 	"github.com/ronreiter/scdlp/internal/hook"
 	"github.com/ronreiter/scdlp/internal/ipc"
+	"github.com/ronreiter/scdlp/internal/promptspool"
 	"github.com/ronreiter/scdlp/internal/rules"
 )
 
@@ -50,12 +52,16 @@ func main() {
 	sockPath := flag.String("socket", defaultSock, "IPC socket path (empty = disabled)")
 	home := flag.String("home", defaultHome, "user home dir for path-rule expansion")
 	hookKind := flag.String("hook", defaultHook, "event source: mock | esf")
-	// Monitor-only is the safe default until the user-facing approval prompt
-	// exists: every decision is classified, audited, and published to the
-	// prompt bus, but nothing is ever denied (unknown reads are allowed, not
-	// blocked with EACCES). Pass --monitor=false to actually enforce.
-	monitorOnly := flag.Bool("monitor", true, "monitor-only: log/audit decisions but never deny")
+	// Monitor-only logs/audits decisions but never denies. The default is now
+	// false: with the approval prompt in place, unknown in-scope reads are
+	// denied (deny-first) and a popup is raised. Pass --monitor to observe
+	// without enforcing.
+	monitorOnly := flag.Bool("monitor", false, "monitor-only: log/audit decisions but never deny")
 	flag.Parse()
+
+	// Scan scope (which files are inspected); defaults to names containing "env".
+	scanCfg := config.Load(filepath.Join(defaultDir, "config.json"))
+	log.Printf("scan scope: name contains one of %v", scanCfg.ScanNameSubstrings)
 
 	if err := os.MkdirAll(filepath.Dir(*rulesPath), 0o750); err != nil {
 		// stderr may be /dev/null in sysextd; best-effort.
@@ -85,6 +91,7 @@ func main() {
 	eng := agent.New(agent.Config{
 		Homes: []string{*home}, Rules: r, Audit: a, Bus: bus,
 		MonitorOnly: *monitorOnly,
+		Scope:       scanCfg,
 		// Use the process logger (redirected to extension.log under sysextd)
 		// rather than the engine's stderr default, which sysextd discards —
 		// otherwise decision/monitor/panic logs would be invisible.
@@ -92,6 +99,12 @@ func main() {
 	})
 	if *monitorOnly {
 		log.Print("monitor-only mode: decisions are logged/audited but never enforced")
+	}
+
+	// Prompt spool: bridges blocked accesses to the user-session menu bar app.
+	spool, err := promptspool.New(filepath.Join(defaultDir, "prompts"), r, log.Default())
+	if err != nil {
+		log.Printf("prompt spool unavailable: %v (prompts will only be logged)", err)
 	}
 
 	if *sockPath != "" {
@@ -147,15 +160,28 @@ func main() {
 		log.Fatalf("unknown --hook %q (want mock|esf)", *hookKind)
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	go func() {
 		for p := range bus.C() {
 			log.Printf("PROMPT file=%s category=%s pid=%d identity=%s",
 				p.FilePath, p.Category, p.PID, p.HumanIdentity)
+			if spool != nil {
+				if _, err := spool.Write(promptspool.Request{
+					PID: p.PID, Exe: p.Exe, HumanChain: p.HumanIdentity,
+					Path: p.FilePath, Category: p.Category,
+					IdentityKey: p.IdentityKey, ExeOnlyKey: p.ExeOnlyKey,
+				}); err != nil {
+					log.Printf("spool write: %v", err)
+				}
+			}
 		}
 	}()
+	if spool != nil {
+		go spool.Watch(ctx) // apply replies (write rules on "always")
+	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	go eng.Run(ctx, h)
 
 	stop := make(chan os.Signal, 1)

@@ -15,13 +15,13 @@
 	<key>CFBundlePackageType</key>
 	<string>SYSX</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.23</string>
+	<string>1.0.24</string>
 	<key>CFBundleSupportedPlatforms</key>
 	<array>
 		<string>MacOSX</string>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>24</string>
+	<string>25</string>
 	<key>LSBackgroundOnly</key>
 	<true/>
 	<key>LSMinimumSystemVersion</key>

@@ -5,16 +5,15 @@ import (
 	"context"
 	"log"
 	"os"
-	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ronreiter/scdlp/internal/audit"
 	"github.com/ronreiter/scdlp/internal/config"
 	"github.com/ronreiter/scdlp/internal/hook"
 	"github.com/ronreiter/scdlp/internal/identity"
-	"github.com/ronreiter/scdlp/internal/pathrules"
 	"github.com/ronreiter/scdlp/internal/rules"
 )
 
@@ -42,8 +41,7 @@ type Config struct {
 	// with EACCES. Safe default until the user-facing approval prompt exists.
 	MonitorOnly bool
 
-	// Scope decides which files are inspected at all: a file is checked only if
-	// its base name matches the configured scan list (default ["env"]).
+	// Scope is the initial glob policy (which paths to prompt/allow/block).
 	Scope config.Config
 
 	// HelperPresent reports whether the user-facing prompt UI is available. When
@@ -53,8 +51,10 @@ type Config struct {
 }
 
 type Engine struct {
-	cfg     Config
-	matcher *pathrules.Matcher
+	cfg Config
+
+	policyMu sync.RWMutex
+	policy   config.Config // swappable at runtime via SetPolicy
 
 	auditCh chan audit.Event // 256-deep; full = drop with counter increment
 }
@@ -66,12 +66,12 @@ func New(cfg Config) *Engine {
 	if cfg.Logger == nil {
 		cfg.Logger = log.New(os.Stderr, "agent: ", log.LstdFlags|log.Lmicroseconds)
 	}
-	if len(cfg.Scope.ScanNameSubstrings) == 0 {
+	if len(cfg.Scope.Policy) == 0 {
 		cfg.Scope = config.Default()
 	}
 	e := &Engine{
 		cfg:     cfg,
-		matcher: pathrules.NewWithDefaults(cfg.Homes),
+		policy:  cfg.Scope,
 		auditCh: make(chan audit.Event, 256),
 	}
 	// Background audit writer. Keeps SQLite INSERTs off the decision path
@@ -83,6 +83,23 @@ func New(cfg Config) *Engine {
 // SetHelperPresent wires the prompt-UI liveness check after construction. Call
 // before Run starts (no concurrent access).
 func (e *Engine) SetHelperPresent(f func() bool) { e.cfg.HelperPresent = f }
+
+// SetPolicy swaps the active glob policy at runtime (e.g. after the user edits
+// it). Safe to call concurrently with Decide. Empty policy is ignored.
+func (e *Engine) SetPolicy(c config.Config) {
+	if len(c.Policy) == 0 {
+		return
+	}
+	e.policyMu.Lock()
+	e.policy = c
+	e.policyMu.Unlock()
+}
+
+func (e *Engine) matchPolicy(path string) (config.Action, string) {
+	e.policyMu.RLock()
+	defer e.policyMu.RUnlock()
+	return e.policy.Matched(path)
+}
 
 func (e *Engine) auditWriter() {
 	defer func() {
@@ -142,20 +159,21 @@ func (e *Engine) decideInner(ev hook.Event) (hook.Decision, *audit.Event) {
 		return hook.Allow, nil
 	}
 
-	// Scope gate: only files whose base name matches the configured scan list
-	// are inspected (default ["env"]). Everything else is allowed untouched.
-	if !e.cfg.Scope.InScope(filepath.Base(ev.Path)) {
-		return hook.Allow, nil
+	action, category := e.matchPolicy(ev.Path) // category = the matched glob
+	switch action {
+	case config.ActionIgnore:
+		return hook.Allow, nil // no glob matched — not inspected, not audited
+	case config.ActionAllow:
+		// Blanket allow by policy. Record it cheaply (skip the identity walk).
+		return hook.Allow, &audit.Event{
+			TS: time.Now().Unix(), FilePath: ev.Path,
+			FileKey: category, FileKeyKind: "category",
+			ProcessPID: ev.PID, ProcessExe: ev.Exe,
+			Verdict: "allow", MatchedKind: category,
+		}
 	}
 
-	// In scope → a protected file. Use the path-rule category as a friendly
-	// label when one matches (e.g. ".env" → "dotenv"); otherwise "env-file".
-	_, category := e.matcher.Match(ev.Path)
-	if category == "" {
-		category = "env-file"
-	}
-	matchedKind := category
-
+	// block or prompt → resolve identity (for the record and for rule lookup).
 	id, err := e.cfg.Resolver.Resolve(ev.PID)
 	if err != nil {
 		e.cfg.Logger.Printf("identity resolve pid=%d: %v", ev.PID, err)
@@ -168,6 +186,24 @@ func (e *Engine) decideInner(ev hook.Event) (hook.Decision, *audit.Event) {
 		id.Compute()
 	}
 
+	audited := &audit.Event{
+		TS:           time.Now().Unix(),
+		FilePath:     ev.Path,
+		FileKey:      category,
+		FileKeyKind:  "category",
+		ProcessPID:   ev.PID,
+		ProcessExe:   id.Exe,
+		ProcessChain: strings.Join(id.HumanChain(), "|"),
+		IdentityKey:  id.KeyHex,
+		MatchedKind:  category,
+	}
+
+	if action == config.ActionBlock {
+		audited.Verdict = "block"
+		return hook.Deny, audited
+	}
+
+	// ActionPrompt: an existing rule decides; otherwise deny-first + prompt.
 	r, err := e.cfg.Rules.Lookup(rules.LookupKey{
 		PathKey:     ev.Path,
 		CategoryKey: category,
@@ -178,24 +214,6 @@ func (e *Engine) decideInner(ev hook.Event) (hook.Decision, *audit.Event) {
 	if err != nil {
 		e.cfg.Logger.Printf("rules lookup: %v", err)
 	}
-
-	audited := &audit.Event{
-		TS:           time.Now().Unix(),
-		FilePath:     ev.Path,
-		FileKey:      category,
-		FileKeyKind:  "category",
-		ProcessPID:   ev.PID,
-		ProcessExe:   id.Exe,
-		ProcessChain: strings.Join(id.HumanChain(), "|"),
-		IdentityKey:  id.KeyHex,
-		MatchedKind:  matchedKind,
-	}
-
-	if r != nil {
-		audited.FileKey = r.FileKey
-		audited.FileKeyKind = string(r.FileKeyKind)
-	}
-
 	switch {
 	case r != nil && r.Verdict == rules.VerdictAllow:
 		audited.Verdict = "allow"
@@ -206,9 +224,8 @@ func (e *Engine) decideInner(ev hook.Event) (hook.Decision, *audit.Event) {
 		audited.RuleID = &r.ID
 		return hook.Deny, audited
 	default:
-		// Unknown (process, category) → prompt. Deny-first only if a prompt UI
-		// is available to approve it; if the helper is down, fail OPEN so we
-		// don't silently block reads no one can allow.
+		// Deny-first only if a prompt UI is available to approve it; if the
+		// helper is down, fail OPEN rather than silently blocking.
 		if e.cfg.HelperPresent != nil && !e.cfg.HelperPresent() {
 			audited.Verdict = "allow-no-helper"
 			e.cfg.Logger.Printf("no prompt helper; allowing in-scope read path=%q pid=%d", ev.Path, ev.PID)
@@ -217,7 +234,7 @@ func (e *Engine) decideInner(ev hook.Event) (hook.Decision, *audit.Event) {
 		audited.Verdict = "deny"
 		e.cfg.Bus.Publish(PromptEvent{
 			FilePath: ev.Path, Category: category,
-			MatchedKind: matchedKind, PID: ev.PID, Exe: id.Exe,
+			MatchedKind: category, PID: ev.PID, Exe: id.Exe,
 			HumanIdentity: id.HumanChainStr(),
 			IdentityKey:   id.KeyHex, ExeOnlyKey: id.ExeOnlyKey,
 		})

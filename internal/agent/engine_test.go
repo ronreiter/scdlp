@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ronreiter/scdlp/internal/audit"
+	"github.com/ronreiter/scdlp/internal/config"
 	"github.com/ronreiter/scdlp/internal/hook"
 	"github.com/ronreiter/scdlp/internal/identity"
 	"github.com/ronreiter/scdlp/internal/rules"
@@ -118,12 +119,9 @@ func TestEngine_InScopeWithAllowRule(t *testing.T) {
 
 	id := resolver[42]
 	id.Compute()
-	// Category for a bare .env is "dotenv" (path rule) or "env-file"; the rule
-	// must match whatever the engine derives. Decide once to learn it.
-	_, cat := eng.matcher.Match(env)
-	if cat == "" {
-		cat = "env-file"
-	}
+	// The category is the matched glob (e.g. "*.env*"); the allow rule must use
+	// the same key the engine derives.
+	_, cat := eng.matchPolicy(env)
 	if _, err := eng.cfg.Rules.Insert(rules.Rule{
 		FileKey: cat, FileKeyKind: rules.FKCategory,
 		IdentityKey: id.KeyHex, IdentityKind: rules.IKChain,
@@ -190,6 +188,24 @@ func TestEngine_HelperPresent_DeniesFirst(t *testing.T) {
 
 	if got := eng.Decide(hook.Event{Path: env, PID: 42}); got != hook.Deny {
 		t.Fatalf("helper present must deny-first, got %v", got)
+	}
+}
+
+func TestEngine_Policy_AllowBlock_AndSetPolicy(t *testing.T) {
+	home := t.TempDir()
+	eng, _ := tempEngine(t, home, fakeResolver{1: {Exe: "/bin/cat", Chain: []string{"/bin/cat"}}})
+	eng.SetPolicy(config.Config{Policy: []config.PolicyEntry{
+		{Glob: "*.secret", Action: "block"},
+		{Glob: "*.env", Action: "allow"},
+	}})
+	if got := eng.Decide(hook.Event{Path: filepath.Join(home, "x.secret"), PID: 1}); got != hook.Deny {
+		t.Fatalf("block glob must deny, got %v", got)
+	}
+	if got := eng.Decide(hook.Event{Path: filepath.Join(home, "x.env"), PID: 1}); got != hook.Allow {
+		t.Fatalf("allow glob must allow, got %v", got)
+	}
+	if got := eng.Decide(hook.Event{Path: filepath.Join(home, "x.txt"), PID: 1}); got != hook.Allow {
+		t.Fatalf("unmatched file must be ignored/allowed, got %v", got)
 	}
 }
 

@@ -147,8 +147,17 @@ func TestShaiHulud_DeniesPostinstall(t *testing.T) {
 		t.Fatalf("postinstall must remain denied, got %v", got)
 	}
 
-	// 5. Audit log has all events.
-	rows, _ := c.TailAudit(context.Background(), ipc.TailReq{Limit: 100})
+	// 5. Audit log has all events. The audit writer is asynchronous, so poll
+	//    until the rows land (or time out) rather than reading once.
+	var rows []ipc.AuditRow
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rows, _ = c.TailAudit(context.Background(), ipc.TailReq{Limit: 100})
+		if len(rows) >= 3 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if len(rows) < 3 {
 		t.Fatalf("expected ≥3 audit rows, got %d", len(rows))
 	}

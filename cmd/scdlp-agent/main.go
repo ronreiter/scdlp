@@ -27,6 +27,7 @@ import (
 	"github.com/ronreiter/scdlp/internal/agent"
 	"github.com/ronreiter/scdlp/internal/audit"
 	"github.com/ronreiter/scdlp/internal/config"
+	"github.com/ronreiter/scdlp/internal/control"
 	"github.com/ronreiter/scdlp/internal/hook"
 	"github.com/ronreiter/scdlp/internal/ipc"
 	"github.com/ronreiter/scdlp/internal/promptspool"
@@ -59,9 +60,12 @@ func main() {
 	monitorOnly := flag.Bool("monitor", false, "monitor-only: log/audit decisions but never deny")
 	flag.Parse()
 
-	// Scan scope (which files are inspected); defaults to names containing "env".
-	scanCfg := config.Load(filepath.Join(defaultDir, "config.json"))
-	log.Printf("scan scope: name contains one of %v", scanCfg.ScanNameSubstrings)
+	// The glob policy lives in the world-writable control dir so the menu bar
+	// app can edit it; it's the single source of truth (loaded here, watched
+	// for live edits below). Falls back to the default policy when absent.
+	controlDir := filepath.Join(defaultDir, "control")
+	policyPath := filepath.Join(controlDir, "policy.json")
+	scanCfg := config.Load(policyPath)
 
 	if err := os.MkdirAll(filepath.Dir(*rulesPath), 0o750); err != nil {
 		// stderr may be /dev/null in sysextd; best-effort.
@@ -110,6 +114,16 @@ func main() {
 	if spool != nil {
 		eng.SetHelperPresent(spool.HelperAlive)
 	}
+
+	// Control channel: the menu bar app edits control/policy.json (watched →
+	// live SetPolicy) and drops revoke commands (applied to the rule store).
+	ctl, err := control.New(controlDir, scanCfg, eng, r, log.Default())
+	if err != nil {
+		log.Printf("control channel unavailable: %v", err)
+	} else {
+		ctl.SetExportSources(a, r) // publish history.json + rules.json for the UI
+	}
+	log.Printf("policy: %d glob rule(s) active", len(scanCfg.Policy))
 
 	if *sockPath != "" {
 		be := newBackend(r, a)
@@ -184,6 +198,9 @@ func main() {
 	}()
 	if spool != nil {
 		go spool.Watch(ctx) // apply replies (write rules on "always")
+	}
+	if ctl != nil {
+		go ctl.Watch(ctx) // live policy edits + revoke commands
 	}
 
 	go eng.Run(ctx, h)

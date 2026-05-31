@@ -6,47 +6,79 @@ import (
 	"testing"
 )
 
-func TestLoad_MissingFile_DefaultsToEnv(t *testing.T) {
+func TestLoad_MissingFile_DefaultsToPolicy(t *testing.T) {
 	c := Load(filepath.Join(t.TempDir(), "does-not-exist.json"))
-	if len(c.ScanNameSubstrings) != 1 || c.ScanNameSubstrings[0] != "env" {
-		t.Fatalf("want default [env], got %v", c.ScanNameSubstrings)
+	if c.Match("/Users/ron/.env") != ActionPrompt {
+		t.Fatalf("missing config must use default policy (prompt on .env)")
 	}
 }
 
-func TestLoad_ReadsConfiguredList(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(p, []byte(`{"scan_name_substrings":["secret","key"]}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	c := Load(p)
-	if len(c.ScanNameSubstrings) != 2 || c.ScanNameSubstrings[0] != "secret" || c.ScanNameSubstrings[1] != "key" {
-		t.Fatalf("unexpected list: %v", c.ScanNameSubstrings)
-	}
-}
-
-func TestLoad_EmptyListFallsBackToDefault(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "config.json")
-	_ = os.WriteFile(p, []byte(`{"scan_name_substrings":[]}`), 0o644)
-	c := Load(p)
-	if len(c.ScanNameSubstrings) != 1 || c.ScanNameSubstrings[0] != "env" {
-		t.Fatalf("want default on empty, got %v", c.ScanNameSubstrings)
-	}
-}
-
-func TestInScope(t *testing.T) {
+func TestMatch_Default_PromptsSecrets(t *testing.T) {
 	c := Default()
-	cases := map[string]bool{
-		".env":        true,
-		".env.local":  true,
-		".ENV":        true, // case-insensitive
-		"environment": true,
-		"hosts":       false,
-		"id_rsa":      false,
-		"foo.txt":     false,
+	if c.Match("/Users/ron/proj/.env") != ActionPrompt {
+		t.Error(".env should prompt under default policy")
 	}
-	for name, want := range cases {
-		if got := c.InScope(name); got != want {
-			t.Errorf("InScope(%q)=%v want %v", name, got, want)
+	if c.Match("/Users/ron/.aws/credentials") != ActionPrompt {
+		t.Error(".aws/credentials should prompt under default policy")
+	}
+	if c.Match("/etc/hosts") != ActionIgnore {
+		t.Error("unrelated file should be ignored")
+	}
+}
+
+func TestMatch_UserGlobs(t *testing.T) {
+	c := Config{Policy: []PolicyEntry{
+		{Glob: "*.env*", Action: "prompt"},
+		{Glob: "*/.aws/credentials", Action: "prompt"},
+	}}
+	cases := map[string]Action{
+		"/Users/ron/spaceforge/.env":  ActionPrompt,
+		"/Users/ron/app/.env.local":   ActionPrompt,
+		"/Users/ron/.aws/credentials": ActionPrompt,
+		"/Users/ron/notes.txt":        ActionIgnore,
+		"/Users/ron/.aws/config":      ActionIgnore,
+	}
+	for path, want := range cases {
+		if got := c.Match(path); got != want {
+			t.Errorf("Match(%q)=%q want %q", path, got, want)
 		}
+	}
+}
+
+func TestMatch_FirstMatchWins(t *testing.T) {
+	c := Config{Policy: []PolicyEntry{
+		{Glob: "*/Caches/*", Action: "allow"},
+		{Glob: "*.env*", Action: "prompt"},
+		{Glob: "*/evil/*", Action: "block"},
+	}}
+	if c.Match("/x/Caches/secret.env") != ActionAllow {
+		t.Error("earlier allow glob must win over later prompt glob")
+	}
+	if c.Match("/x/proj/.env") != ActionPrompt {
+		t.Error(".env should prompt")
+	}
+	if c.Match("/x/evil/data") != ActionBlock {
+		t.Error("evil path should block")
+	}
+}
+
+func TestLoad_MigratesScanSubstrings(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	_ = os.WriteFile(p, []byte(`{"scan_name_substrings":["env"]}`), 0o644)
+	c := Load(p)
+	if c.Match("/Users/ron/.env") != ActionPrompt {
+		t.Errorf("legacy scan list should migrate to a prompt glob; got %q", c.Match("/Users/ron/.env"))
+	}
+	if c.Match("/Users/ron/file.txt") != ActionIgnore {
+		t.Error("non-matching file should ignore after migration")
+	}
+}
+
+func TestLoad_ReadsPolicy(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	_ = os.WriteFile(p, []byte(`{"policy":[{"glob":"*/secret/*","action":"block"}]}`), 0o644)
+	c := Load(p)
+	if c.Match("/a/secret/x") != ActionBlock {
+		t.Errorf("policy from file not applied; got %q", c.Match("/a/secret/x"))
 	}
 }

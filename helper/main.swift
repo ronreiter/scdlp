@@ -356,8 +356,22 @@ final class Dashboard: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTabl
             sub.frame = NSRect(x: 130, y: 332, width: 580, height: 22)
             v.addSubview(sub)
             let body = NSTextField(wrappingLabelWithString: aboutText)
-            body.frame = NSRect(x: 28, y: 24, width: 684, height: 280)
+            body.frame = NSRect(x: 28, y: 74, width: 684, height: 230)
             v.addSubview(body)
+
+            let credit = NSTextField(labelWithString: "Created by Ron Reiter")
+            credit.textColor = .secondaryLabelColor
+            credit.frame = NSRect(x: 28, y: 40, width: 400, height: 20)
+            v.addSubview(credit)
+
+            let url = URL(string: "https://github.com/ronreiter/scdlp")!
+            let link = NSTextField(labelWithAttributedString: NSAttributedString(
+                string: "github.com/ronreiter/scdlp",
+                attributes: [.link: url, .foregroundColor: NSColor.linkColor]))
+            link.isSelectable = true
+            link.allowsEditingTextAttributes = true
+            link.frame = NSRect(x: 28, y: 16, width: 400, height: 20)
+            v.addSubview(link)
         }
     }
 

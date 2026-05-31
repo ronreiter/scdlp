@@ -32,6 +32,16 @@ func loadJSON<T: Decodable>(_ path: String, _ type: T.Type) -> T? {
     return try? JSONDecoder().decode(T.self, from: data)
 }
 
+// brandIcon is the SCDLP asterisk-shield (shield.png / shield@2x.png in the app
+// bundle). Falls back to an SF Symbol if the resource is missing.
+func brandIcon() -> NSImage? {
+    if let img = NSImage(named: NSImage.Name("shield")) { return img }
+    let cfg = NSImage.SymbolConfiguration(pointSize: 80, weight: .semibold)
+        .applying(NSImage.SymbolConfiguration(paletteColors: [.systemBlue]))
+    return NSImage(systemSymbolName: "lock.shield.fill", accessibilityDescription: "SCDLP")?
+        .withSymbolConfiguration(cfg)
+}
+
 func writePolicyDoc(_ doc: PolicyDoc) {
     let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
     if let data = try? enc.encode(doc) { try? data.write(to: URL(fileURLWithPath: policyPath)) }
@@ -342,10 +352,8 @@ final class Dashboard: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTabl
     func aboutTab() -> NSTabViewItem {
         return tab("About") { v in
             let icon = NSImageView(frame: NSRect(x: 28, y: 312, width: 88, height: 88))
-            let cfg = NSImage.SymbolConfiguration(pointSize: 80, weight: .semibold)
-                .applying(NSImage.SymbolConfiguration(paletteColors: [.systemBlue]))
-            icon.image = NSImage(systemSymbolName: "lock.shield.fill", accessibilityDescription: "SCDLP")?
-                .withSymbolConfiguration(cfg)
+            icon.imageScaling = .scaleProportionallyUpOrDown
+            icon.image = brandIcon()
             v.addSubview(icon)
             let title = NSTextField(labelWithString: "Supply Chain DLP")
             title.font = .systemFont(ofSize: 24, weight: .bold)
@@ -477,12 +485,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let exe = (req.exe as NSString).lastPathComponent
         let alert = NSAlert()
         alert.alertStyle = .critical
-        // Brand the prompt with a shield instead of the default caution triangle.
-        let iconCfg = NSImage.SymbolConfiguration(pointSize: 56, weight: .semibold)
-            .applying(NSImage.SymbolConfiguration(paletteColors: [.systemBlue]))
-        if let shield = NSImage(systemSymbolName: "lock.shield.fill", accessibilityDescription: "SCDLP")?
-            .withSymbolConfiguration(iconCfg) {
+        // Brand the prompt with the SCDLP shield instead of the default caution triangle.
+        if let shield = brandIcon() {
             shield.isTemplate = false
+            shield.size = NSSize(width: 64, height: 64)
             alert.icon = shield
         }
         alert.messageText = "Allow \(exe) to read a secret file?"

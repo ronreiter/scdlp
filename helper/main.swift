@@ -55,6 +55,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pollTimer = pt
     }
 
+    // Requests older than this are stale — the access already happened and was
+    // decided long ago; replaying them would flood the user (e.g. a backlog
+    // that built up while the helper was down). Skip + delete them.
+    let staleAfter: TimeInterval = 30
+
     // scan runs on the work queue; UI is hopped to the main thread.
     func scan() {
         let fm = FileManager.default
@@ -64,6 +69,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let reqPath = "\(spoolDir)/\(name)"
             let replyPath = "\(spoolDir)/\(id).reply.json"
             if fm.fileExists(atPath: replyPath) { continue }
+            // Drop stale requests rather than prompting for them.
+            if let attrs = try? fm.attributesOfItem(atPath: reqPath),
+               let mtime = attrs[.modificationDate] as? Date,
+               Date().timeIntervalSince(mtime) > staleAfter {
+                try? fm.removeItem(atPath: reqPath)
+                continue
+            }
             guard let data = fm.contents(atPath: reqPath),
                   let req = try? JSONDecoder().decode(Request.self, from: data) else { continue }
             DispatchQueue.main.async { self.present(req, replyPath: replyPath) }

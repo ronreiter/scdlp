@@ -66,6 +66,15 @@ func New(dir string, r *rules.Store, logger *log.Logger) (*Spool, error) {
 	}
 	// MkdirAll is subject to umask; force the mode so the console user can write.
 	_ = os.Chmod(dir, 0o777)
+
+	// Clear any leftover requests/replies from a previous run. Stale prompts
+	// must never be replayed — those accesses are long gone, and a backlog
+	// would flood the user with popups the moment a helper starts draining it.
+	if entries, err := filepath.Glob(filepath.Join(dir, "*.json")); err == nil {
+		for _, p := range entries {
+			os.Remove(p)
+		}
+	}
 	return &Spool{dir: dir, rules: r, log: logger, pending: map[string]bool{}}, nil
 }
 

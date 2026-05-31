@@ -24,8 +24,8 @@ struct Request: Codable {
 struct Reply: Codable { let decision, scope: String }
 struct PolicyEntry: Codable { var glob: String; var action: String }
 struct PolicyDoc: Codable { var policy: [PolicyEntry]; var trusted_apps: [String]? }
-struct HistoryRow: Codable { let ts: Int; let verdict, path, process, category: String }
-struct RuleRow: Codable { let id: Int; let glob, identity_kind, verdict, created_by: String }
+struct HistoryRow: Codable, Equatable { let ts: Int; let verdict, path, process, category: String }
+struct RuleRow: Codable, Equatable { let id: Int; let glob, identity_kind, verdict, created_by: String }
 
 func loadJSON<T: Decodable>(_ path: String, _ type: T.Type) -> T? {
     guard let data = FileManager.default.contents(atPath: path) else { return nil }
@@ -198,9 +198,22 @@ final class Dashboard: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTabl
     }
 
     func reload(reloadPolicy: Bool) {
-        history = loadJSON(historyPath, [HistoryRow].self) ?? []
-        rules = loadJSON(rulesPath, [RuleRow].self) ?? []
-        historyTable.reloadData(); rulesTable.reloadData()
+        // Only reloadData when the data actually changed — otherwise the 2s
+        // refresh timer would clear the user's row selection (e.g. in Rules,
+        // mid-revoke). When rules do change, preserve the selection by rule id.
+        let newHistory = loadJSON(historyPath, [HistoryRow].self) ?? []
+        if newHistory != history { history = newHistory; historyTable.reloadData() }
+
+        let newRules = loadJSON(rulesPath, [RuleRow].self) ?? []
+        if newRules != rules {
+            let sel = rulesTable.selectedRow
+            let selID = (sel >= 0 && sel < rules.count) ? rules[sel].id : nil
+            rules = newRules
+            rulesTable.reloadData()
+            if let id = selID, let idx = rules.firstIndex(where: { $0.id == id }) {
+                rulesTable.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
+            }
+        }
         if reloadPolicy, let doc = loadJSON(policyPath, PolicyDoc.self) {
             policy = doc.policy
             policyTable.reloadData()

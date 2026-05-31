@@ -35,16 +35,39 @@ type Config struct {
 	ScanNameSubstrings []string `json:"scan_name_substrings,omitempty"`
 }
 
-// Default is the built-in policy: prompt on common credential files.
+// Default is the built-in policy: prompt on a broad set of common credential
+// and secret-bearing files. Each match prompts (deny-first) and the user's
+// "remember" choice is scoped to the specific file, so the list can be generous.
 func Default() Config {
-	return Config{Policy: []PolicyEntry{
-		{Glob: "*.env*", Action: string(ActionPrompt)},
-		{Glob: "*/.aws/credentials", Action: string(ActionPrompt)},
-		{Glob: "*/.aws/config", Action: string(ActionPrompt)},
-		{Glob: "*/.ssh/id_*", Action: string(ActionPrompt)},
-		{Glob: "*/.npmrc", Action: string(ActionPrompt)},
-		{Glob: "*/.git-credentials", Action: string(ActionPrompt)},
-	}}
+	globs := []string{
+		// dotenv
+		"*.env*",
+		// cloud providers
+		"*/.aws/credentials", "*/.aws/config",
+		"*/.config/gcloud/*credential*", "*/.config/gcloud/access_tokens.db",
+		"*/.azure/accessTokens.json", "*/.azure/*credential*",
+		"*/.oci/*",
+		// ssh / gpg / generic keys
+		"*/.ssh/id_*", "*/.ssh/*.pem", "*/.gnupg/*",
+		"*.pem", "*.p12", "*.pfx", "*.kdbx", "*.keychain*",
+		// package managers / language toolchains
+		"*/.npmrc", "*/.pypirc", "*/.gem/credentials", "*/.cargo/credentials*",
+		"*/.netrc", "*/.bundle/config",
+		// git / forge tokens
+		"*/.git-credentials", "*/.config/gh/hosts.yml", "*/.config/hub",
+		// containers / k8s
+		"*/.docker/config.json", "*/.kube/config", "*kubeconfig",
+		// infra-as-code (often embeds secrets)
+		"*/.terraform.d/credentials.tfrc.json", "*.tfstate", "*.tfvars",
+		"*/.databricks/*",
+		// misc credential stores
+		"*/.boto", "*/.s3cfg", "*/.pgpass", "*/.my.cnf",
+	}
+	p := make([]PolicyEntry, 0, len(globs))
+	for _, g := range globs {
+		p = append(p, PolicyEntry{Glob: g, Action: string(ActionPrompt)})
+	}
+	return Config{Policy: p}
 }
 
 // Load reads JSON config from path. A missing/unreadable/malformed file, or one

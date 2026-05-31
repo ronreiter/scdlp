@@ -26,9 +26,13 @@ struct Reply: Codable {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
-    var pollTimer: Timer?
-    var heartbeatTimer: Timer?
-    var busy = false
+    // GCD timers (not run-loop NSTimers): a LaunchAgent-launched accessory app's
+    // main run loop doesn't reliably fire NSTimers, but dispatch-source timers
+    // run on their own queue regardless, so heartbeat + polling keep working.
+    let workQ = DispatchQueue(label: "io.sentra.scdlp.helper.work")
+    var heartbeatTimer: DispatchSourceTimer?
+    var pollTimer: DispatchSourceTimer?
+    var busy = false // touched only on the main thread
     var decisions = 0
 
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -38,12 +42,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.title = "🛡"
         rebuildMenu(status: "watching")
 
-        touchHeartbeat()
-        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            self?.touchHeartbeat()
-        }
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
-            self?.poll()
+        let hb = DispatchSource.makeTimerSource(queue: workQ)
+        hb.schedule(deadline: .now(), repeating: 2.0)
+        hb.setEventHandler { [weak self] in self?.touchHeartbeat() }
+        hb.resume()
+        heartbeatTimer = hb
+
+        let pt = DispatchSource.makeTimerSource(queue: workQ)
+        pt.schedule(deadline: .now() + 0.3, repeating: 0.3)
+        pt.setEventHandler { self.scan() }
+        pt.resume()
+        pollTimer = pt
+    }
+
+    // scan runs on the work queue; UI is hopped to the main thread.
+    func scan() {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: spoolDir) else { return }
+        for name in names.sorted() where name.hasSuffix(".req.json") {
+            let id = String(name.dropLast(".req.json".count))
+            let reqPath = "\(spoolDir)/\(name)"
+            let replyPath = "\(spoolDir)/\(id).reply.json"
+            if fm.fileExists(atPath: replyPath) { continue }
+            guard let data = fm.contents(atPath: reqPath),
+                  let req = try? JSONDecoder().decode(Request.self, from: data) else { continue }
+            DispatchQueue.main.async { self.present(req, replyPath: replyPath) }
         }
     }
 
@@ -61,24 +84,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = m
     }
 
-    func poll() {
-        guard !busy else { return }
-        let fm = FileManager.default
-        guard let names = try? fm.contentsOfDirectory(atPath: spoolDir) else { return }
-        for name in names.sorted() where name.hasSuffix(".req.json") {
-            let id = String(name.dropLast(".req.json".count))
-            let reqPath = "\(spoolDir)/\(name)"
-            let replyPath = "\(spoolDir)/\(id).reply.json"
-            if fm.fileExists(atPath: replyPath) { continue } // already answered
-            guard let data = fm.contents(atPath: reqPath),
-                  let req = try? JSONDecoder().decode(Request.self, from: data) else { continue }
-            busy = true
-            present(req, replyPath: replyPath)
-            busy = false
-        }
-    }
-
     func present(_ req: Request, replyPath: String) {
+        // One modal at a time; re-check the reply didn't arrive while queued.
+        if busy || FileManager.default.fileExists(atPath: replyPath) { return }
+        busy = true
+        defer { busy = false }
+
         let exe = lastComponent(req.exe)
         let alert = NSAlert()
         alert.alertStyle = .critical

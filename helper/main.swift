@@ -12,6 +12,7 @@ let policyPath = "\(controlDir)/policy.json"
 let historyPath = "\(controlDir)/history.json"
 let rulesPath = "\(controlDir)/rules.json"
 let commandsDir = "\(controlDir)/commands"
+let disabledMarker = "\(controlDir)/disabled"
 let policyActions = ["prompt", "allow", "block"]
 
 // ───── shared models ────────────────────────────────────────────────────────
@@ -256,13 +257,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
         NSApp.setActivationPolicy(.accessory)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        // White (template) shield that adapts to the menu bar, not a color emoji.
-        if let img = NSImage(systemSymbolName: "shield.fill", accessibilityDescription: "scdlp") {
-            img.isTemplate = true
-            statusItem.button?.image = img
-        } else {
-            statusItem.button?.title = "scdlp"
-        }
         rebuildMenu()
 
         let hb = DispatchSource.makeTimerSource(queue: workQ)
@@ -278,16 +272,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func touchHeartbeat() { _ = FileManager.default.createFile(atPath: heartbeatPath, contents: Data()) }
 
+    func isDisabled() -> Bool { FileManager.default.fileExists(atPath: disabledMarker) }
+
     func rebuildMenu() {
+        let off = isDisabled()
+        // Template (monochrome white) shield; a slashed shield when DLP is off.
+        if let img = NSImage(systemSymbolName: off ? "shield.slash" : "shield.fill", accessibilityDescription: "scdlp") {
+            img.isTemplate = true
+            statusItem.button?.image = img
+        } else {
+            statusItem.button?.title = off ? "scdlp(off)" : "scdlp"
+        }
         let m = NSMenu()
-        m.addItem(withTitle: "scdlp — watching", action: nil, keyEquivalent: "")
+        m.addItem(withTitle: off ? "scdlp — DISABLED" : "scdlp — protecting", action: nil, keyEquivalent: "")
         m.addItem(withTitle: "Approvals handled: \(decisions)", action: nil, keyEquivalent: "")
         m.addItem(.separator())
         m.addItem(withTitle: "Open scdlp…", action: #selector(openDashboard), keyEquivalent: "o").target = self
+        let toggle = m.addItem(withTitle: off ? "Enable protection" : "Disable protection",
+                               action: #selector(toggleDisabled), keyEquivalent: "")
+        toggle.target = self
         m.addItem(.separator())
         m.addItem(withTitle: "Quit scdlp-helper", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         statusItem.menu = m
     }
+
+    @objc func toggleDisabled() {
+        if isDisabled() {
+            try? FileManager.default.removeItem(atPath: disabledMarker)
+        } else {
+            try? FileManager.default.createDirectory(atPath: controlDir, withIntermediateDirectories: true)
+            FileManager.default.createFile(atPath: disabledMarker, contents: Data())
+        }
+        rebuildMenu()
+    }
+
     @objc func openDashboard() { dashboard.show() }
 
     func scan() {

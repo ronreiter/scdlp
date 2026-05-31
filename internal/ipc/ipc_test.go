@@ -78,7 +78,7 @@ func (f *fakeBackend) AddRule(s AddRuleSpec) (int64, error) {
 	f.last++
 	return f.last, nil
 }
-func (f *fakeBackend) RevokeRule(id int64) error             { return nil }
+func (f *fakeBackend) RevokeRule(id int64) error              { return nil }
 func (f *fakeBackend) ListRules(_ ListReq) ([]RuleRow, error) { return nil, nil }
 func (f *fakeBackend) Status() (StatusRow, error)             { return StatusRow{Healthy: true}, nil }
 func (f *fakeBackend) TailAudit(_ TailReq) ([]AuditRow, error) {

@@ -47,9 +47,11 @@ func Default() Config {
 		"*/.config/gcloud/*credential*", "*/.config/gcloud/access_tokens.db",
 		"*/.azure/accessTokens.json", "*/.azure/*credential*",
 		"*/.oci/*",
-		// ssh / gpg / generic keys
+		// ssh / gpg / key material. NB: deliberately NOT "*.pem" (too broad —
+		// many public certs) or "*.keychain*" (the macOS keychains are read
+		// constantly by the OS; guarding them deny-first breaks auth/signing).
 		"*/.ssh/id_*", "*/.ssh/*.pem", "*/.gnupg/*",
-		"*.pem", "*.p12", "*.pfx", "*.kdbx", "*.keychain*",
+		"*.p12", "*.pfx", "*.kdbx",
 		// package managers / language toolchains
 		"*/.npmrc", "*/.pypirc", "*/.gem/credentials", "*/.cargo/credentials*",
 		"*/.netrc", "*/.bundle/config",

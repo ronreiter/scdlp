@@ -85,6 +85,7 @@ final class Dashboard: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTabl
     var history: [HistoryRow] = []
     var rules: [RuleRow] = []
     var policy: [PolicyEntry] = []
+    var trusted: [String] = []
     // GCD timer (not a run-loop NSTimer, which doesn't fire reliably in a
     // LaunchAgent-launched app) so History/Rules update live while open.
     var refresh: DispatchSourceTimer?
@@ -193,10 +194,8 @@ final class Dashboard: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTabl
         if reloadPolicy, let doc = loadJSON(policyPath, PolicyDoc.self) {
             policy = doc.policy
             policyTable.reloadData()
-            // Don't stomp an in-progress edit: only refill when not focused.
-            if window?.firstResponder !== trustedView {
-                trustedView.string = (doc.trusted_apps ?? []).joined(separator: "\n")
-            }
+            trusted = doc.trusted_apps ?? []
+            trustedTable.reloadData()
         }
     }
 
@@ -205,6 +204,7 @@ final class Dashboard: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTabl
         switch t {
         case historyTable: return history.count
         case rulesTable: return rules.count
+        case trustedTable: return trusted.count
         default: return policy.count
         }
     }
@@ -212,6 +212,7 @@ final class Dashboard: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTabl
     // NSTableViewDelegate — view-based cells.
     func tableView(_ t: NSTableView, viewFor col: NSTableColumn?, row: Int) -> NSView? {
         let id = col?.identifier.rawValue ?? ""
+        if t === trustedTable { return Self.label(trusted[row]) }
         if t === policyTable {
             if id == "glob" {
                 let f = NSTextField(string: policy[row].glob)
@@ -279,31 +280,62 @@ final class Dashboard: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTabl
         writePolicyDoc(PolicyDoc(policy: entries, trusted_apps: existing?.trusted_apps))
     }
 
-    // ── Trusted Apps tab: one app name per line, allowlisted to read secrets ──
-    let trustedView = NSTextView()
+    // ── Trusted Apps tab: a list of allowlisted apps; add via Browse… ──
+    let trustedTable = NSTableView()
     func trustedTab() -> NSTabViewItem {
+        trustedTable.addTableColumn(col("app", "Trusted application", 700))
+        trustedTable.dataSource = self; trustedTable.delegate = self
+        trustedTable.usesAlternatingRowBackgroundColors = true
+        trustedTable.headerView = nil
         return tab("Trusted Apps") { v in
             let hint = NSTextField(wrappingLabelWithString:
-                "Apps listed here may read any protected file without prompting. One per line (e.g. \"Moltty\"). Matched against the whole process tree.")
-            hint.frame = NSRect(x: 12, y: 388, width: 716, height: 36)
+                "Apps listed here may read any protected file without prompting — matched against the whole process tree. Use Browse… to add one.")
+            hint.frame = NSRect(x: 12, y: 392, width: 716, height: 32)
             hint.textColor = .secondaryLabelColor
             v.addSubview(hint)
-            trustedView.isRichText = false
-            trustedView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-            trustedView.isAutomaticQuoteSubstitutionEnabled = false
-            v.addSubview(scrolling(trustedView, NSRect(x: 12, y: 48, width: 716, height: 332)))
-            let save = NSButton(title: "Save", target: self, action: #selector(saveTrusted))
-            save.bezelStyle = .rounded; save.keyEquivalent = "\r"
-            save.frame = NSRect(x: 740 - 90, y: 8, width: 80, height: 28)
-            save.autoresizingMask = [.minXMargin]
-            v.addSubview(save)
+            v.addSubview(scrolling(trustedTable, NSRect(x: 12, y: 48, width: 716, height: 336)))
+            let browse = NSButton(title: "Browse…", target: self, action: #selector(browseTrusted))
+            browse.bezelStyle = .rounded
+            browse.frame = NSRect(x: 12, y: 8, width: 100, height: 28)
+            let rem = NSButton(title: "Remove", target: self, action: #selector(removeTrusted))
+            rem.frame = NSRect(x: 118, y: 8, width: 90, height: 28)
+            v.addSubview(browse); v.addSubview(rem)
         }
     }
-    @objc func saveTrusted() {
-        let apps = trustedView.string.components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+
+    @objc func browseTrusted() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.treatsFilePackagesAsDirectories = false
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.message = "Choose an application to trust"
+        panel.prompt = "Trust"
+        if #available(macOS 11, *) { panel.allowedContentTypes = [.application] }
+        guard panel.runModal() == .OK else { return }
+        // App name = bundle name without ".app" (matches the extension's chain test).
+        for url in panel.urls {
+            let name = url.deletingPathExtension().lastPathComponent
+            if !name.isEmpty, !trusted.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
+                trusted.append(name)
+            }
+        }
+        persistTrusted()
+        trustedTable.reloadData()
+    }
+
+    @objc func removeTrusted() {
+        let r = trustedTable.selectedRow
+        guard r >= 0 && r < trusted.count else { return }
+        trusted.remove(at: r)
+        persistTrusted()
+        trustedTable.reloadData()
+    }
+
+    func persistTrusted() {
         let existing = loadJSON(policyPath, PolicyDoc.self)
-        writePolicyDoc(PolicyDoc(policy: existing?.policy ?? [], trusted_apps: apps.isEmpty ? nil : apps))
+        writePolicyDoc(PolicyDoc(policy: existing?.policy ?? [], trusted_apps: trusted.isEmpty ? nil : trusted))
     }
 
     // ── About tab: branding + what SCDLP is ──

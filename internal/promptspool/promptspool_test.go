@@ -47,6 +47,31 @@ func TestWrite_CreatesRequestFile(t *testing.T) {
 	}
 }
 
+func TestNew_ClearsLeftoverSpoolFiles(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "prompts")
+	if err := os.MkdirAll(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a backlog left by a previous run.
+	for _, n := range []string{"old1.req.json", "old2.req.json", "old1.reply.json"} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r, err := rules.Open(filepath.Join(t.TempDir(), "rules.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { r.Close() })
+	if _, err := New(dir, r, nil); err != nil {
+		t.Fatal(err)
+	}
+	leftover, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	if len(leftover) != 0 {
+		t.Fatalf("New must clear stale spool files, found %v", leftover)
+	}
+}
+
 func TestWrite_DedupsSameIdentityCategory(t *testing.T) {
 	s, _, dir := newSpool(t)
 	req := Request{Path: "/Users/x/.env", Category: "env-file", IdentityKey: "chainK"}

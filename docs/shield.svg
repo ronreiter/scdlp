@@ -8,20 +8,20 @@
   <path d="M60 6 L104 22 V58 C104 88 84 108 60 116 C36 108 16 88 16 58 V22 Z"
         fill="url(#g)" stroke="#9bb8ff" stroke-width="2"/>
   <path d="M60 16 L94 28 V58 C94 82 78 99 60 106 C42 99 26 82 26 58 V28 Z"
-        fill="#0e1730" opacity="0.55"/>
-  <!-- three asterisks: a masked secret/password -->
-  <g stroke="#ffffff" stroke-width="3.4" stroke-linecap="round">
+        fill="#0e1730" opacity="0.6"/>
+  <!-- three asterisks: a masked secret / password -->
+  <g stroke="#ffffff" stroke-width="4.4" stroke-linecap="round">
     <!-- left * -->
-    <line x1="40" y1="55" x2="40" y2="69"/>
-    <line x1="33.9" y1="65.5" x2="46.1" y2="58.5"/>
-    <line x1="46.1" y1="65.5" x2="33.9" y2="58.5"/>
+    <line x1="38" y1="52" x2="38" y2="72"/>
+    <line x1="29.3" y1="67" x2="46.7" y2="57"/>
+    <line x1="46.7" y1="67" x2="29.3" y2="57"/>
     <!-- middle * -->
-    <line x1="60" y1="55" x2="60" y2="69"/>
-    <line x1="53.9" y1="65.5" x2="66.1" y2="58.5"/>
-    <line x1="66.1" y1="65.5" x2="53.9" y2="58.5"/>
+    <line x1="60" y1="52" x2="60" y2="72"/>
+    <line x1="51.3" y1="67" x2="68.7" y2="57"/>
+    <line x1="68.7" y1="67" x2="51.3" y2="57"/>
     <!-- right * -->
-    <line x1="80" y1="55" x2="80" y2="69"/>
-    <line x1="73.9" y1="65.5" x2="86.1" y2="58.5"/>
-    <line x1="86.1" y1="65.5" x2="73.9" y2="58.5"/>
+    <line x1="82" y1="52" x2="82" y2="72"/>
+    <line x1="73.3" y1="67" x2="90.7" y2="57"/>
+    <line x1="90.7" y1="67" x2="73.3" y2="57"/>
   </g>
 </svg>

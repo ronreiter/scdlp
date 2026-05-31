@@ -8,7 +8,7 @@
 <meta property="og:title" content="Supply Chain DLP (SCDLP)">
 <meta property="og:description" content="Stop a compromised dependency or AI agent from quietly reading your .env, cloud, and SSH secrets — with a Little-Snitch-style approval prompt.">
 <meta property="og:type" content="website">
-<link rel="icon" href="shield.svg" type="image/svg+xml">
+<link rel="icon" href="shield.svg?v=3" type="image/svg+xml">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3/dist/tabler-icons.min.css">
 <style>
   :root{
@@ -40,11 +40,13 @@
   .btn:hover{text-decoration:none;filter:brightness(1.08)}
   .btn.ghost{background:transparent;border:1px solid var(--line);color:var(--txt)}
   .btn i{vertical-align:-2px;margin-right:8px;font-size:18px}
-  /* github stars pill */
-  .stars{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);
-    border-radius:10px;padding:9px 12px;color:var(--txt);font-weight:600;font-size:14px;white-space:nowrap}
+  /* nav buttons (stars + GitHub): identical height + padding */
+  .nav .stars,.nav .btn{display:inline-flex;align-items:center;gap:7px;height:38px;padding:0 15px;
+    border-radius:10px;font-weight:600;font-size:14px;line-height:1;box-sizing:border-box}
+  .stars{border:1px solid var(--line);color:var(--txt);white-space:nowrap}
   .stars:hover{text-decoration:none;border-color:#33457a}
-  .stars i{color:#ffcc66}
+  .stars .star{color:#ffcc66;font-size:15px}
+  .nav .btn i{margin:0;font-size:17px;vertical-align:0}
 
   /* hero */
   .hero{padding:84px 0 56px;text-align:center}
@@ -72,11 +74,20 @@
     background:#16224a;border:1px solid #2a3c6e;margin-bottom:12px;color:var(--accent2)}
   .ico i{font-size:22px;line-height:1}
 
-  /* flow */
-  .flow{counter-reset:step}
-  .flow .card{display:flex;gap:16px;align-items:flex-start}
-  .flow .num{flex:none;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;
-    background:linear-gradient(135deg,var(--accent),#2f5bd6);font-weight:700}
+  /* how it works — horizontal steps */
+  .steps{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+  @media(max-width:820px){.steps{grid-template-columns:1fr 1fr}}
+  @media(max-width:520px){.steps{grid-template-columns:1fr}}
+  .step .num{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;
+    background:linear-gradient(135deg,var(--accent),#2f5bd6);font-weight:700;color:#fff;margin-bottom:12px}
+  /* feature rows (with screenshots) */
+  .featrow{display:grid;grid-template-columns:1.05fr 1fr;gap:38px;align-items:center;margin:0 0 36px}
+  .featrow:last-child{margin-bottom:0}
+  .featrow.flip .frame{order:2}
+  @media(max-width:820px){.featrow{grid-template-columns:1fr;gap:18px}.featrow.flip .frame{order:0}}
+  .feattext h3{font-size:22px;margin:0 0 10px}
+  .feattext p{color:var(--mut);font-size:16px;margin:0}
+  .apple{width:15px;height:17px;vertical-align:-3px;margin-right:9px}
 
   /* code */
   pre{background:#0a1124;border:1px solid var(--line);border-radius:14px;padding:18px 20px;
@@ -115,7 +126,7 @@
 <body>
 
 <header class="nav"><div class="wrap">
-  <a class="brand" href="#top"><img src="shield.svg" alt=""> SCDLP</a>
+  <a class="brand" href="#top"><img src="shield.svg?v=3" alt=""> SCDLP</a>
   <nav>
     <a href="#problem">Problem</a>
     <a href="#worm">Shai-Hulud</a>
@@ -123,27 +134,30 @@
     <a href="#features">Features</a>
     <a href="#install">Install</a>
   </nav>
-  <a class="stars" href="https://github.com/ronreiter/scdlp/stargazers" style="margin-left:18px" title="Star on GitHub"><i class="ti ti-star-filled"></i> <span id="starnum">★</span></a>
+  <a class="stars" href="https://github.com/ronreiter/scdlp/stargazers" style="margin-left:18px" title="Star on GitHub"><span class="star">★</span> <span id="starnum">0</span></a>
   <a class="btn ghost" href="https://github.com/ronreiter/scdlp"><i class="ti ti-brand-github"></i> GitHub</a>
 </div></header>
 
 <a id="top"></a>
 <section class="hero"><div class="wrap">
-  <img class="logo" src="shield.svg" alt="SCDLP shield logo">
+  <img class="logo" src="shield.svg?v=3" alt="SCDLP shield logo">
   <h1>Supply Chain DLP<br><span class="grad">for your secrets</span></h1>
   <p class="lead">By default, SCDLP <strong>blocks</strong> any process from reading the secret files in
   your policy — <strong>.env files, cloud keys, SSH/GPG, tokens</strong>. Each read pauses in the
   kernel until you approve it with a Little-Snitch-style prompt, so a compromised dependency or
   rogue AI agent can't exfiltrate what it can't read.</p>
   <div class="cta">
-    <a class="btn" href="https://github.com/ronreiter/scdlp/releases/latest/download/scdlp.dmg"><i class="ti ti-brand-apple"></i> Download for macOS</a>
+    <a class="btn" href="https://github.com/ronreiter/scdlp/releases/latest/download/scdlp.dmg"><svg class="apple" viewBox="0 0 384 512" aria-hidden="true"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg>Download for macOS</a>
     <a class="btn ghost" href="#how">See how it works</a>
   </div>
 </div></section>
 
 <section id="problem"><div class="wrap">
   <h2>The supply-chain secret leak</h2>
-  <p class="sub">One <code>npm install</code> runs code you never read.</p>
+  <p class="sub">Developers are under constant threat from untrusted code. Every day your machine
+  runs thousands of packages — and their transitive dependencies — written by unverified authors,
+  each free to read any file you can. One poisoned dependency, build script, or AI agent is all it
+  takes to ship your credentials to an attacker.</p>
   <div class="grid g3">
     <div class="card"><div class="ico"><i class="ti ti-package"></i></div><h3>postinstall hooks</h3>
       <p>npm / pip / cargo / gem run arbitrary scripts on install. The classic payload reads
@@ -161,7 +175,7 @@
   <div class="callout">
     <div class="wico"><i class="ti ti-virus"></i></div>
     <div>
-      <h2>Stops worms like Shai-Hulud</h2>
+      <h2>Protects you from worms like Shai-Hulud</h2>
       <p>In September 2025, <strong>Shai-Hulud</strong> became the first self-replicating worm on npm.
       A trojanized package's install script scanned the machine for secrets (npm tokens,
       <code>~/.aws/credentials</code>, <code>.env</code>, SSH &amp; GitHub tokens), exfiltrated them to
@@ -186,54 +200,73 @@
 <section id="how" style="background:linear-gradient(180deg,transparent,#0a112400)"><div class="wrap">
   <h2>How it works</h2>
   <p class="sub">A signed system extension on Apple's Endpoint Security framework — kernel-grade, not a shim.</p>
-  <div class="grid flow" style="gap:14px">
-    <div class="card"><div class="num">1</div><div>
+  <div class="steps">
+    <div class="step card"><div class="num">1</div>
       <h3>Intercept</h3><p>SCDLP subscribes to authorization <code>open</code> events. Every read of a
-      protected file pauses in-kernel until SCDLP decides.</p></div></div>
-    <div class="card"><div class="num">2</div><div>
+      protected file pauses in-kernel until SCDLP decides.</p></div>
+    <div class="step card"><div class="num">2</div>
       <h3>Identify</h3><p>It resolves the full process ancestry — which program, launched by what,
-      under which app — and matches the file against your policy of path globs.</p></div></div>
-    <div class="card"><div class="num">3</div><div>
+      under which app — and matches the file against your policy of path globs.</p></div>
+    <div class="step card"><div class="num">3</div>
       <h3>Decide</h3><p>Known-good? Allowed instantly. Unknown? Denied first, and you get a prompt:
-      <em>"Allow <code>node</code> to read <code>~/.aws/credentials</code>?"</em></p></div></div>
-    <div class="card"><div class="num">4</div><div>
+      <em>"Allow <code>node</code> to read <code>~/.aws/credentials</code>?"</em></p></div>
+    <div class="step card"><div class="num">4</div>
       <h3>Remember</h3><p>Your choice becomes a scoped rule — this exact file, this program, or this whole
-      trusted app — so you're asked once, not every time.</p></div></div>
+      trusted app — so you're asked once, not every time.</p></div>
   </div>
 </div></section>
 
 <section id="features"><div class="wrap">
+  <h2>Features</h2>
+  <p class="sub">Everything runs from a menu-bar app — no terminal required.</p>
+
+  <div class="featrow">
+    <div class="frame"><img src="screenshots/allow.png" alt="SCDLP approval prompt" loading="lazy"></div>
+    <div class="feattext"><h3>Real-time approval prompts</h3>
+      <p>When an unknown process reaches for a secret, the read is blocked and you get a
+      Little-Snitch-style prompt showing the file and the full process chain. Allow it once, always
+      for that app, or deny — the read stays paused in the kernel until you choose.</p></div>
+  </div>
+
+  <div class="featrow flip">
+    <div class="frame"><img src="screenshots/policy.png" alt="Policy editor" loading="lazy"></div>
+    <div class="feattext"><h3>Editable policy</h3>
+      <p>Decide exactly which files are protected with a table of path globs — <code>*.env*</code>,
+      <code>*/.aws/credentials</code>, SSH keys, tokens, kubeconfigs. Add, remove, and tune entries;
+      changes apply live, no restart.</p></div>
+  </div>
+
+  <div class="featrow">
+    <div class="frame"><img src="screenshots/history.png" alt="Decision history" loading="lazy"></div>
+    <div class="feattext"><h3>Full decision history</h3>
+      <p>Every allow and deny is recorded with the file, the matched category, and the complete
+      process ancestry — so you can see exactly what tried to read your secrets, and when.</p></div>
+  </div>
+
+  <div class="featrow flip">
+    <div class="frame"><img src="screenshots/rules.png" alt="Remembered rules" loading="lazy"></div>
+    <div class="feattext"><h3>Remembered rules</h3>
+      <p>Your choices become scoped rules — by exact file, by program, or by trusted app — so you're
+      asked once, not every time. Review them anytime and revoke any rule with one click.</p></div>
+  </div>
+</div></section>
+
+<section id="more"><div class="wrap">
   <h2>What you get</h2>
   <p class="sub">Defense that stays out of your way.</p>
   <div class="grid g3">
-    <div class="card"><div class="ico"><i class="ti ti-shield-check"></i></div><h3>Real-time enforcement</h3>
-      <p>Reads are blocked <em>before</em> the bytes leave disk — not logged after the fact.</p></div>
-    <div class="card"><div class="ico"><i class="ti ti-list-details"></i></div><h3>Editable policy</h3>
-      <p>A table of path globs (<code>*.env*</code>, <code>*/.aws/credentials</code>, …) you can add,
-      remove, and tune from the menu bar app.</p></div>
     <div class="card"><div class="ico"><i class="ti ti-circle-check"></i></div><h3>Trusted apps</h3>
       <p>Allowlist tools you trust to read secrets — once — so chatty-but-legit apps never flood you.</p></div>
     <div class="card"><div class="ico"><i class="ti ti-bell-off"></i></div><h3>No prompt storms</h3>
       <p>Per-process re-prompt cooldown means a noisy reader is denied quietly, not 50 dialogs deep.</p></div>
-    <div class="card"><div class="ico"><i class="ti ti-history"></i></div><h3>Full history</h3>
-      <p>Every allow/deny, with file, process chain, and category — auditable in the dashboard.</p></div>
     <div class="card"><div class="ico"><i class="ti ti-power"></i></div><h3>One-click kill switch</h3>
       <p>Toggle enforcement from the menu-bar shield whenever you need to get out of the way.</p></div>
-  </div>
-</div></section>
-
-<section id="screens"><div class="wrap">
-  <h2>Screenshots</h2>
-  <p class="sub">The approval prompt and the menu-bar dashboard.</p>
-  <div class="grid g2">
-    <div class="frame"><img src="screenshots/allow.png" alt="SCDLP approval prompt" loading="lazy">
-      <div class="cap">Approval prompt — allow or deny, with the full process chain.</div></div>
-    <div class="frame"><img src="screenshots/history.png" alt="History tab" loading="lazy">
-      <div class="cap">History — every allow/deny decision, file, and process.</div></div>
-    <div class="frame"><img src="screenshots/policy.png" alt="Policy tab" loading="lazy">
-      <div class="cap">Policy — editable table of protected path globs.</div></div>
-    <div class="frame"><img src="screenshots/rules.png" alt="Rules tab" loading="lazy">
-      <div class="cap">Rules — remembered decisions, revocable any time.</div></div>
+    <div class="card"><div class="ico"><i class="ti ti-shield-check"></i></div><h3>Kernel-grade</h3>
+      <p>Built on Apple's Endpoint Security framework — signed, notarized, and tamper-resistant.</p></div>
+    <div class="card"><div class="ico"><i class="ti ti-lock"></i></div><h3>Private by design</h3>
+      <p>Everything stays on your Mac. No telemetry, no cloud, no accounts — ever.</p></div>
+    <div class="card"><div class="ico"><i class="ti ti-license"></i></div><h3>Open source</h3>
+      <p>MIT-licensed and auditable end to end. Read every line, build it yourself.</p></div>
   </div>
 </div></section>
 

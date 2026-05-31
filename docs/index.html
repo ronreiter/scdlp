@@ -205,20 +205,21 @@
   <div class="steps">
     <div class="step card">
       <div class="stephead"><div class="num">1</div><h3>Intercept</h3></div>
-      <p>SCDLP subscribes to authorization <code>open</code> events. Every read of a
-      protected file pauses in-kernel until SCDLP decides.</p></div>
+      <p>SCDLP subscribes to authorization <code>open</code> events on Apple's Endpoint
+      Security framework, so every read of a protected file is checked by SCDLP first.</p></div>
     <div class="step card">
       <div class="stephead"><div class="num">2</div><h3>Identify</h3></div>
       <p>It resolves the full process ancestry — which program, launched by what,
       under which app — and matches the file against your policy of path globs.</p></div>
     <div class="step card">
       <div class="stephead"><div class="num">3</div><h3>Decide</h3></div>
-      <p>Known-good? Allowed instantly. Unknown? Denied first, and you get a prompt:
+      <p>Covered by a rule? Allowed instantly. Otherwise SCDLP <strong>blocks the read right
+      away</strong> and raises a prompt — it never stalls the process waiting on you:
       <em>"Allow <code>node</code> to read <code>~/.aws/credentials</code>?"</em></p></div>
     <div class="step card">
-      <div class="stephead"><div class="num">4</div><h3>Remember</h3></div>
-      <p>Your choice becomes a scoped rule — this exact file, this program, or this whole
-      trusted app — so you're asked once, not every time.</p></div>
+      <div class="stephead"><div class="num">4</div><h3>Approve &amp; retry</h3></div>
+      <p>Approve the prompt and your choice becomes a scoped rule — this file, this program, or a
+      trusted app. Re-run the command and the read goes through. You approve once.</p></div>
   </div>
 </div></section>
 
@@ -229,9 +230,9 @@
   <div class="featrow">
     <div class="frame"><img src="screenshots/allow.png" alt="SCDLP approval prompt" loading="lazy"></div>
     <div class="feattext"><h3><i class="ti ti-shield-check"></i>Real-time approval prompts</h3>
-      <p>When an unknown process reaches for a secret, the read is blocked and you get a
+      <p>When an unknown process reaches for a secret, SCDLP blocks the read and raises a
       Little-Snitch-style prompt showing the file and the full process chain. Allow it once, always
-      for that app, or deny — the read stays paused in the kernel until you choose.</p></div>
+      for that app, or deny — then re-run, and approved reads go straight through.</p></div>
   </div>
 
   <div class="featrow flip">

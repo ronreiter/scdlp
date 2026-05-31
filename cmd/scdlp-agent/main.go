@@ -120,6 +120,8 @@ func main() {
 	ctl, err := control.New(controlDir, scanCfg, eng, r, log.Default())
 	if err != nil {
 		log.Printf("control channel unavailable: %v", err)
+	} else {
+		ctl.SetExportSources(a, r) // publish history.json + rules.json for the UI
 	}
 	log.Printf("policy: %d glob rule(s) active", len(scanCfg.Policy))
 

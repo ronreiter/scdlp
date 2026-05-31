@@ -16,7 +16,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ronreiter/scdlp/internal/audit"
 	"github.com/ronreiter/scdlp/internal/config"
+	"github.com/ronreiter/scdlp/internal/rules"
 )
 
 // PolicyApplier swaps the engine's live policy (implemented by *agent.Engine).
@@ -25,10 +27,21 @@ type PolicyApplier interface{ SetPolicy(config.Config) }
 // RuleRevoker removes a rule by id (implemented by *rules.Store).
 type RuleRevoker interface{ Revoke(int64) error }
 
+// AuditTailer / RuleLister let the controller export read-only views for the UI
+// (implemented by *audit.Store / *rules.Store).
+type AuditTailer interface {
+	Tail(audit.TailFilter) ([]audit.Event, error)
+}
+type RuleLister interface {
+	List(rules.ListFilter) ([]rules.Rule, error)
+}
+
 type Controller struct {
 	dir, cmdDir string
 	applier     PolicyApplier
 	revoker     RuleRevoker
+	auditSrc    AuditTailer
+	ruleSrc     RuleLister
 	log         *log.Logger
 	lastMod     time.Time
 }
@@ -109,17 +122,85 @@ func (c *Controller) ApplyCommands() int {
 	return n
 }
 
-// Watch polls for policy edits and commands until ctx is cancelled.
+// SetExportSources wires the read-only views the controller publishes for the
+// UI (history.json + rules.json). Call before Watch.
+func (c *Controller) SetExportSources(a AuditTailer, r RuleLister) {
+	c.auditSrc, c.ruleSrc = a, r
+}
+
+// HistoryRow / RuleRow are the JSON shapes the UI consumes.
+type HistoryRow struct {
+	TS       int64  `json:"ts"`
+	Verdict  string `json:"verdict"`
+	Path     string `json:"path"`
+	Process  string `json:"process"`
+	Category string `json:"category"`
+}
+type RuleRow struct {
+	ID           int64  `json:"id"`
+	Glob         string `json:"glob"`
+	IdentityKind string `json:"identity_kind"`
+	Verdict      string `json:"verdict"`
+	CreatedBy    string `json:"created_by"`
+}
+
+// export writes world-readable history.json + rules.json for the UI to read,
+// so it never has to open the SQLite DBs (which the root extension is writing).
+func (c *Controller) export() {
+	if c.auditSrc != nil {
+		if evs, err := c.auditSrc.Tail(audit.TailFilter{Limit: 500}); err == nil {
+			rows := make([]HistoryRow, 0, len(evs))
+			for _, e := range evs {
+				rows = append(rows, HistoryRow{
+					TS: e.TS, Verdict: e.Verdict, Path: e.FilePath,
+					Process: e.ProcessChain, Category: e.FileKey,
+				})
+			}
+			writeJSON(filepath.Join(c.dir, "history.json"), rows)
+		}
+	}
+	if c.ruleSrc != nil {
+		if rs, err := c.ruleSrc.List(rules.ListFilter{}); err == nil {
+			rows := make([]RuleRow, 0, len(rs))
+			for _, r := range rs {
+				rows = append(rows, RuleRow{
+					ID: r.ID, Glob: r.FileKey, IdentityKind: string(r.IdentityKind),
+					Verdict: string(r.Verdict), CreatedBy: r.CreatedBy,
+				})
+			}
+			writeJSON(filepath.Join(c.dir, "rules.json"), rows)
+		}
+	}
+}
+
+func writeJSON(path string, v any) {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if os.WriteFile(tmp, data, 0o644) == nil {
+		_ = os.Rename(tmp, path)
+	}
+}
+
+// Watch polls for policy edits + commands, and publishes the read-only exports,
+// until ctx is cancelled.
 func (c *Controller) Watch(ctx context.Context) {
-	t := time.NewTicker(250 * time.Millisecond)
-	defer t.Stop()
+	poll := time.NewTicker(250 * time.Millisecond)
+	exp := time.NewTicker(time.Second)
+	defer poll.Stop()
+	defer exp.Stop()
+	c.export()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-poll.C:
 			c.ReloadPolicyIfChanged()
 			c.ApplyCommands()
+		case <-exp.C:
+			c.export()
 		}
 	}
 }

@@ -29,6 +29,7 @@ echo "==> assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Library/SystemExtensions"
 cp "$REPO/host/Info.plist" "$APP/Contents/Info.plist"
+cp "$REPO/host/scdlp.icns" "$APP/Contents/Resources/scdlp.icns"
 mv "$DIST/scdlp-host" "$APP/Contents/MacOS/scdlp-host"
 chmod +x "$APP/Contents/MacOS/scdlp-host"
 

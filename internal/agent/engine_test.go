@@ -264,6 +264,42 @@ func TestEngine_RepromptCooldown_SuppressesRepeatPrompts(t *testing.T) {
 	}
 }
 
+func TestEngine_RepromptCooldown_CoalescesAcrossUnstableIdentity(t *testing.T) {
+	// Same file, but each attempt presents a *different* process-ancestry chain
+	// (e.g. an app spawning a fresh subprocess tree, or a helper at a per-launch
+	// temp path). The cooldown is keyed on the file, so the second attempt must
+	// be denied WITHOUT raising a duplicate popup for the same file.
+	home := t.TempDir()
+	env := writeEnv(t, home)
+	eng, bus := tempEngine(t, home, fakeResolver{
+		42: {Exe: "/usr/bin/node", Chain: []string{"/usr/bin/node", "/usr/bin/sh", "/Apps/Moltty"}},
+		43: {Exe: "/usr/bin/node", Chain: []string{"/usr/bin/node", "/Apps/Moltty"}}, // different chain ⇒ different identityKey
+	})
+	eng.SetHelperPresent(func() bool { return true })
+	now := time.Unix(1000, 0)
+	eng.SetClock(func() time.Time { return now })
+
+	if d := eng.Decide(hook.Event{Path: env, PID: 42}); d != hook.Deny {
+		t.Fatalf("want deny, got %v", d)
+	}
+	select {
+	case <-bus.C():
+	case <-time.After(time.Second):
+		t.Fatal("expected first prompt")
+	}
+
+	// Second attempt on the SAME file via a different identity, within cooldown.
+	now = now.Add(3 * time.Second)
+	if d := eng.Decide(hook.Event{Path: env, PID: 43}); d != hook.Deny {
+		t.Fatalf("want deny on repeat, got %v", d)
+	}
+	select {
+	case <-bus.C():
+		t.Fatal("same file within cooldown must not re-prompt even with a different identity (this is the duplicate popup)")
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
 func TestEngine_TrustedApp_AllowsWithoutPrompt(t *testing.T) {
 	home := t.TempDir()
 	env := writeEnv(t, home)

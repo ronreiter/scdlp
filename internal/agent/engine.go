@@ -50,10 +50,11 @@ type Config struct {
 	// than being denied with no way to approve it. Nil ⇒ always-present.
 	HelperPresent func() bool
 
-	// RepromptCooldown is how long after prompting on a (process, file) the
-	// engine suppresses *re-prompting* the same pair. The read is still denied,
-	// but no new prompt is raised — this is what stops a chatty background
-	// reader (e.g. an AI terminal) from flooding the user. Zero ⇒ default 60s.
+	// RepromptCooldown is how long after prompting on a file the engine
+	// suppresses *re-prompting* that same file. The read is still denied, but
+	// no new prompt is raised — this is what stops a chatty background reader
+	// (e.g. an AI terminal) from flooding the user, even when its process
+	// identity shifts between attempts. Zero ⇒ default 60s.
 	RepromptCooldown time.Duration
 }
 
@@ -68,7 +69,7 @@ type Engine struct {
 	now func() time.Time // injectable clock (tests); defaults to time.Now
 
 	promptMu   sync.Mutex
-	lastPrompt map[string]time.Time // (identity|path) → last time we raised a prompt
+	lastPrompt map[string]time.Time // path → last time we raised a prompt
 
 	auditCh chan audit.Event // 256-deep; full = drop with counter increment
 }
@@ -138,19 +139,26 @@ func (e *Engine) trustsChain(chain []string) bool {
 	return e.policy.TrustsChain(chain)
 }
 
-// shouldPrompt records that we are about to prompt on (identity, path) and
-// reports whether a prompt should actually be raised — false if we prompted on
-// the same pair within RepromptCooldown (so we deny silently instead of
-// flooding). It only updates the timestamp when it returns true.
-func (e *Engine) shouldPrompt(identityKey, path string) bool {
-	key := identityKey + "|" + path
+// shouldPrompt records that we are about to prompt on a file and reports
+// whether a prompt should actually be raised — false if we prompted on the
+// same file within RepromptCooldown (so we deny silently instead of flooding).
+// It only updates the timestamp when it returns true.
+//
+// The cooldown is keyed on the file alone, not (identity, file): a single
+// logical reader can present an unstable process-ancestry identity between
+// back-to-back attempts (e.g. an app spawning a fresh subprocess tree, or a
+// helper that lives at a per-launch temp path), which would otherwise sail
+// past an identity-scoped cooldown as a "first" prompt and raise a duplicate
+// popup for the same file. The access is denied either way; coalescing here
+// only suppresses the redundant prompt.
+func (e *Engine) shouldPrompt(path string) bool {
 	now := e.now()
 	e.promptMu.Lock()
 	defer e.promptMu.Unlock()
-	if last, ok := e.lastPrompt[key]; ok && now.Sub(last) < e.cfg.RepromptCooldown {
+	if last, ok := e.lastPrompt[path]; ok && now.Sub(last) < e.cfg.RepromptCooldown {
 		return false
 	}
-	e.lastPrompt[key] = now
+	e.lastPrompt[path] = now
 	return true
 }
 
@@ -303,8 +311,8 @@ func (e *Engine) decideInner(ev hook.Event) (hook.Decision, *audit.Event) {
 			return hook.Allow, audited
 		}
 		// Deny either way; only raise a prompt if we haven't recently prompted
-		// on this exact (process, file) — otherwise a chatty reader floods us.
-		if !e.shouldPrompt(id.KeyHex, ev.Path) {
+		// on this file — otherwise a chatty reader floods us.
+		if !e.shouldPrompt(ev.Path) {
 			audited.Verdict = "deny-cooldown"
 			return hook.Deny, audited
 		}

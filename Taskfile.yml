@@ -69,9 +69,15 @@ tasks:
   # ───── test / quality ─────────────────────────────────────────────────────
 
   test:
-    desc: Run the full test suite
+    desc: Run the full test suite (Go + the Swift helper logic)
     cmds:
       - go test ./...
+      - ./helper/test.sh
+
+  test:helper:
+    desc: Run the headless Swift PromptQueue (prompt-dedup) tests
+    cmds:
+      - ./helper/test.sh
 
   test:race:
     desc: Run the suite with -race

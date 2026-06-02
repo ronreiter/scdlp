@@ -8,9 +8,12 @@ SIGN_ID="${SCDLP_SIGN_ID:--}"
 
 echo "==> building scdlp-helper"
 mkdir -p "$DIST"
-swiftc -O -target x86_64-apple-macos13 -o "$DIST/scdlp-helper" "$REPO/helper/main.swift"
+# main.swift carries the app entry point; promptqueue.swift is the testable
+# prompt-dedup logic (promptqueue_tests.swift is NOT compiled into the app).
+HELPER_SRCS=("$REPO/helper/main.swift" "$REPO/helper/promptqueue.swift")
+swiftc -O -target x86_64-apple-macos13 -o "$DIST/scdlp-helper" "${HELPER_SRCS[@]}"
 if /usr/bin/arch -arm64 true 2>/dev/null; then
-    swiftc -O -target arm64-apple-macos13 -o "$DIST/scdlp-helper-arm64" "$REPO/helper/main.swift"
+    swiftc -O -target arm64-apple-macos13 -o "$DIST/scdlp-helper-arm64" "${HELPER_SRCS[@]}"
     lipo -create "$DIST/scdlp-helper" "$DIST/scdlp-helper-arm64" -output "$DIST/scdlp-helper.fat"
     mv "$DIST/scdlp-helper.fat" "$DIST/scdlp-helper"
     rm "$DIST/scdlp-helper-arm64"

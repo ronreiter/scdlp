@@ -419,10 +419,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let workQ = DispatchQueue(label: "io.sentra.scdlp.helper.work")
     var heartbeatTimer: DispatchSourceTimer?
     var pollTimer: DispatchSourceTimer?
-    var busy = false
     var decisions = 0
     let dashboard = Dashboard()
-    let staleAfter: TimeInterval = 30
+    // presentedIDs / presenting are touched only on workQ (scan), so no locking is
+    // needed. presentedIDs is every request id we've already shown — a prompt is
+    // displayed at most once, which kills the re-display race where a single
+    // approval used to spawn a stream of identical dialogs. presenting gates to
+    // one modal on screen at a time. See PromptQueue (promptqueue.swift).
+    var presentedIDs = Set<String>()
+    var presenting = false
 
     func applicationDidFinishLaunching(_ note: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -478,28 +483,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openDashboard() { dashboard.show() }
 
+    // scan runs on workQ every 0.3s. It builds the current view of the spool,
+    // lets PromptQueue decide what to do (reap stale, show at most one not-yet-
+    // shown prompt), then acts on that decision. All dedup state lives here.
     func scan() {
         let fm = FileManager.default
         guard let names = try? fm.contentsOfDirectory(atPath: spoolDir) else { return }
-        for name in names.sorted() where name.hasSuffix(".req.json") {
+
+        var requests: [PendingRequest] = []
+        var existing = Set<String>()
+        for name in names where name.hasSuffix(".req.json") {
             let id = String(name.dropLast(".req.json".count))
+            existing.insert(id)
             let reqPath = "\(spoolDir)/\(name)"
-            let replyPath = "\(spoolDir)/\(id).reply.json"
-            if fm.fileExists(atPath: replyPath) { continue }
-            if let attrs = try? fm.attributesOfItem(atPath: reqPath),
-               let mtime = attrs[.modificationDate] as? Date,
-               Date().timeIntervalSince(mtime) > staleAfter {
-                try? fm.removeItem(atPath: reqPath); continue
-            }
-            guard let data = fm.contents(atPath: reqPath),
-                  let req = try? JSONDecoder().decode(Request.self, from: data) else { continue }
-            DispatchQueue.main.async { self.present(req, replyPath: replyPath) }
+            let hasReply = fm.fileExists(atPath: "\(spoolDir)/\(id).reply.json")
+            let mtime = (try? fm.attributesOfItem(atPath: reqPath))?[.modificationDate] as? Date ?? Date.distantPast
+            requests.append(PendingRequest(id: id, mtime: mtime, hasReply: hasReply))
         }
+
+        let decision = PromptQueue.next(requests: requests, presented: presentedIDs, busy: presenting, now: Date())
+        for id in decision.removeStale {
+            try? fm.removeItem(atPath: "\(spoolDir)/\(id).req.json")
+        }
+        // Drop presented ids whose request file is gone, so the set can't grow without bound.
+        presentedIDs = PromptQueue.prune(presented: presentedIDs, existing: existing)
+
+        guard let id = decision.present else { return }
+        let reqPath = "\(spoolDir)/\(id).req.json"
+        let replyPath = "\(spoolDir)/\(id).reply.json"
+        guard let data = fm.contents(atPath: reqPath),
+              let req = try? JSONDecoder().decode(Request.self, from: data) else { return }
+        presentedIDs.insert(id)   // shown at most once, even if the files race during cleanup
+        presenting = true
+        DispatchQueue.main.async { self.present(req, replyPath: replyPath) }
     }
 
     func present(_ req: Request, replyPath: String) {
-        if busy || FileManager.default.fileExists(atPath: replyPath) { return }
-        busy = true; defer { busy = false }
+        // scan() already gated this (one at a time, shown once); just release the
+        // gate on the scan queue when the modal closes so the next prompt can show.
+        defer { workQ.async { self.presenting = false } }
         let exe = (req.exe as NSString).lastPathComponent
         let alert = NSAlert()
         alert.alertStyle = .critical

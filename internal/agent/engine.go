@@ -3,6 +3,7 @@ package agent
 
 import (
 	"context"
+	"io"
 	"log"
 	"os"
 	"runtime/debug"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ronreiter/scdlp/internal/audit"
+	"github.com/ronreiter/scdlp/internal/classify"
 	"github.com/ronreiter/scdlp/internal/config"
 	"github.com/ronreiter/scdlp/internal/hook"
 	"github.com/ronreiter/scdlp/internal/identity"
@@ -56,6 +58,17 @@ type Config struct {
 	// (e.g. an AI terminal) from flooding the user, even when its process
 	// identity shifts between attempts. Zero ⇒ default 60s.
 	RepromptCooldown time.Duration
+
+	// Classifier runs the 4 KiB secret scan on path-flagged files before
+	// prompting. Nil ⇒ content scanning is disabled and the engine behaves
+	// exactly as before this feature (deny-first + prompt on unmatched
+	// in-scope reads).
+	Classifier *classify.Classifier
+
+	// ReadHead returns up to the first 4 KiB of the file at path. Injectable so
+	// the engine is testable without touching disk. Nil ⇒ a default reader that
+	// opens the path and reads ≤4096 bytes.
+	ReadHead func(path string) ([]byte, error)
 }
 
 type Engine struct {
@@ -86,6 +99,9 @@ func New(cfg Config) *Engine {
 	}
 	if cfg.RepromptCooldown == 0 {
 		cfg.RepromptCooldown = 60 * time.Second
+	}
+	if cfg.ReadHead == nil {
+		cfg.ReadHead = defaultReadHead
 	}
 	e := &Engine{
 		cfg:        cfg,
@@ -303,6 +319,21 @@ func (e *Engine) decideInner(ev hook.Event) (hook.Decision, *audit.Event) {
 		audited.RuleID = &r.ID
 		return hook.Deny, audited
 	default:
+		// Content tier: this path matched a prompt glob but has no rule yet.
+		// The glob is coarse (it flags candidate secret files by location); if
+		// the first 4 KiB holds no actual secret, it's a false positive — allow
+		// it silently instead of nagging. Nothing is persisted: every open
+		// re-scans, so a file that later gains a secret is caught next time.
+		if e.cfg.Classifier != nil {
+			if buf, rerr := e.cfg.ReadHead(ev.Path); rerr == nil {
+				if !e.cfg.Classifier.ClassifyBuf(buf).IsSecret() {
+					audited.Verdict = "allow-clean"
+					return hook.Allow, audited
+				}
+			}
+			// read failed (fail safe) or secret found → fall through to
+			// today's helper-present / cooldown / deny-first + prompt logic.
+		}
 		// Deny-first only if a prompt UI is available to approve it; if the
 		// helper is down, fail OPEN rather than silently blocking.
 		if e.cfg.HelperPresent != nil && !e.cfg.HelperPresent() {
@@ -349,4 +380,22 @@ func (e *Engine) Run(ctx context.Context, h hook.Hook) {
 		}
 		decide(e.Decide(ev))
 	}
+}
+
+// defaultReadHead opens path and returns up to the first classify.MaxScanBytes
+// bytes (the classifier's scan window). The agent runs as root, so it can read
+// the head regardless of the calling process's own permissions. A zero-byte
+// file returns an empty slice, nil err.
+func defaultReadHead(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	buf := make([]byte, classify.MaxScanBytes)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		return nil, err
+	}
+	return buf[:n], nil
 }

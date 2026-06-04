@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ronreiter/scdlp/internal/audit"
+	"github.com/ronreiter/scdlp/internal/classify"
 	"github.com/ronreiter/scdlp/internal/config"
 	"github.com/ronreiter/scdlp/internal/hook"
 	"github.com/ronreiter/scdlp/internal/identity"
@@ -347,5 +348,163 @@ func TestEngine_RunLoopAgainstMockHook(t *testing.T) {
 	got := mh.Inject(hook.Event{Path: env, PID: 99})
 	if got != hook.Deny {
 		t.Fatalf("want deny, got %v", got)
+	}
+}
+
+func TestEngine_InScope_BenignContent_AllowsWithoutPromptOrRule(t *testing.T) {
+	home := t.TempDir()
+	env := writeEnv(t, home) // path matches the default "env" scope glob
+	dir := t.TempDir()
+	rdb, err := rules.Open(filepath.Join(dir, "rules.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { rdb.Close() })
+	adb, err := audit.Open(filepath.Join(dir, "audit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { adb.Close() })
+	bus := NewPromptBus(8)
+
+	var reads int
+	eng := New(Config{
+		Homes: []string{home}, Rules: rdb, Audit: adb, Bus: bus,
+		Resolver:   fakeResolver{42: {Exe: "/usr/bin/node", Chain: []string{"/usr/bin/node"}}},
+		Classifier: classify.New(),
+		ReadHead: func(string) ([]byte, error) {
+			reads++
+			return []byte("port=8080\nlog_level=info\n"), nil // no secret
+		},
+	})
+	eng.SetHelperPresent(func() bool { return true })
+
+	if d := eng.Decide(hook.Event{Path: env, PID: 42}); d != hook.Allow {
+		t.Fatalf("benign protected file must be allowed, got %v", d)
+	}
+	if reads != 1 {
+		t.Fatalf("expected exactly one head read, got %d", reads)
+	}
+	// Must NOT prompt.
+	select {
+	case <-bus.C():
+		t.Fatal("benign content must not raise a prompt")
+	case <-time.After(150 * time.Millisecond):
+	}
+	// Must NOT persist any rule.
+	rs, err := rdb.List(rules.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rs) != 0 {
+		t.Fatalf("clean scan must not write a rule, found %d", len(rs))
+	}
+	// Spec §5: clean allows must be recorded with verdict "allow-clean".
+	// The engine writes audit rows asynchronously, so poll briefly.
+	deadline := time.Now().Add(time.Second)
+	var auditVerdict string
+	for time.Now().Before(deadline) {
+		evts, err := adb.Tail(audit.TailFilter{Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range evts {
+			if e.FilePath == env {
+				auditVerdict = e.Verdict
+				break
+			}
+		}
+		if auditVerdict != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if auditVerdict != "allow-clean" {
+		t.Fatalf("expected audit verdict %q, got %q", "allow-clean", auditVerdict)
+	}
+}
+
+func TestEngine_InScope_SecretContent_DeniesAndPrompts(t *testing.T) {
+	home := t.TempDir()
+	env := writeEnv(t, home)
+	dir := t.TempDir()
+	rdb, err := rules.Open(filepath.Join(dir, "rules.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { rdb.Close() })
+	adb, err := audit.Open(filepath.Join(dir, "audit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { adb.Close() })
+	bus := NewPromptBus(8)
+	eng := New(Config{
+		Homes: []string{home}, Rules: rdb, Audit: adb, Bus: bus,
+		Resolver:   fakeResolver{42: {Exe: "/usr/bin/node", Chain: []string{"/usr/bin/node"}}},
+		Classifier: classify.New(),
+		ReadHead: func(string) ([]byte, error) {
+			// PEM header → classifier confidence 1.0 → IsSecret true.
+			return []byte("-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n"), nil
+		},
+	})
+	eng.SetHelperPresent(func() bool { return true })
+
+	if d := eng.Decide(hook.Event{Path: env, PID: 42}); d != hook.Deny {
+		t.Fatalf("secret content must deny-first, got %v", d)
+	}
+	select {
+	case <-bus.C():
+	case <-time.After(time.Second):
+		t.Fatal("secret content must raise a prompt")
+	}
+}
+
+func TestEngine_InScope_ReadFailure_FailsSafeToPrompt(t *testing.T) {
+	home := t.TempDir()
+	env := writeEnv(t, home)
+	dir := t.TempDir()
+	rdb, err := rules.Open(filepath.Join(dir, "rules.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { rdb.Close() })
+	adb, err := audit.Open(filepath.Join(dir, "audit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { adb.Close() })
+	bus := NewPromptBus(8)
+	eng := New(Config{
+		Homes: []string{home}, Rules: rdb, Audit: adb, Bus: bus,
+		Resolver:   fakeResolver{42: {Exe: "/usr/bin/node", Chain: []string{"/usr/bin/node"}}},
+		Classifier: classify.New(),
+		ReadHead:   func(string) ([]byte, error) { return nil, os.ErrPermission },
+	})
+	eng.SetHelperPresent(func() bool { return true })
+
+	if d := eng.Decide(hook.Event{Path: env, PID: 42}); d != hook.Deny {
+		t.Fatalf("read failure must fail safe to deny, got %v", d)
+	}
+	select {
+	case <-bus.C():
+	case <-time.After(time.Second):
+		t.Fatal("read failure must raise a prompt (fail safe)")
+	}
+}
+
+func TestEngine_ClassifierNil_PreservesDenyFirst(t *testing.T) {
+	// Default tempEngine sets no Classifier → feature off → existing behavior.
+	home := t.TempDir()
+	env := writeEnv(t, home)
+	eng, bus := tempEngine(t, home, fakeResolver{42: {Exe: "/usr/bin/node", Chain: []string{"/usr/bin/node"}}})
+	eng.SetHelperPresent(func() bool { return true })
+	if d := eng.Decide(hook.Event{Path: env, PID: 42}); d != hook.Deny {
+		t.Fatalf("nil classifier must deny-first, got %v", d)
+	}
+	select {
+	case <-bus.C():
+	case <-time.After(time.Second):
+		t.Fatal("nil classifier must still prompt")
 	}
 }

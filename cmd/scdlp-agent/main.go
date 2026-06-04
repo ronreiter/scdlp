@@ -26,6 +26,7 @@ import (
 
 	"github.com/ronreiter/scdlp/internal/agent"
 	"github.com/ronreiter/scdlp/internal/audit"
+	"github.com/ronreiter/scdlp/internal/classify"
 	"github.com/ronreiter/scdlp/internal/config"
 	"github.com/ronreiter/scdlp/internal/control"
 	"github.com/ronreiter/scdlp/internal/hook"
@@ -96,6 +97,9 @@ func main() {
 		Homes: []string{*home}, Rules: r, Audit: a, Bus: bus,
 		MonitorOnly: *monitorOnly,
 		Scope:       scanCfg,
+		// Content tier: scan the first 4 KiB of prompt-flagged files; benign
+		// ones are allowed without a prompt (ReadHead defaults to disk).
+		Classifier: classify.New(),
 		// Use the process logger (redirected to extension.log under sysextd)
 		// rather than the engine's stderr default, which sysextd discards —
 		// otherwise decision/monitor/panic logs would be invisible.

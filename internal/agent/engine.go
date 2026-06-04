@@ -3,6 +3,7 @@ package agent
 
 import (
 	"context"
+	"io"
 	"log"
 	"os"
 	"runtime/debug"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ronreiter/scdlp/internal/audit"
+	"github.com/ronreiter/scdlp/internal/classify"
 	"github.com/ronreiter/scdlp/internal/config"
 	"github.com/ronreiter/scdlp/internal/hook"
 	"github.com/ronreiter/scdlp/internal/identity"
@@ -56,6 +58,17 @@ type Config struct {
 	// (e.g. an AI terminal) from flooding the user, even when its process
 	// identity shifts between attempts. Zero ⇒ default 60s.
 	RepromptCooldown time.Duration
+
+	// Classifier runs the 4 KiB secret scan on path-flagged files before
+	// prompting. Nil ⇒ content scanning is disabled and the engine behaves
+	// exactly as before this feature (deny-first + prompt on unmatched
+	// in-scope reads).
+	Classifier *classify.Classifier
+
+	// ReadHead returns up to the first 4 KiB of the file at path. Injectable so
+	// the engine is testable without touching disk. Nil ⇒ a default reader that
+	// opens the path and reads ≤4096 bytes.
+	ReadHead func(path string) ([]byte, error)
 }
 
 type Engine struct {
@@ -86,6 +99,9 @@ func New(cfg Config) *Engine {
 	}
 	if cfg.RepromptCooldown == 0 {
 		cfg.RepromptCooldown = 60 * time.Second
+	}
+	if cfg.ReadHead == nil {
+		cfg.ReadHead = defaultReadHead
 	}
 	e := &Engine{
 		cfg:        cfg,
@@ -349,4 +365,22 @@ func (e *Engine) Run(ctx context.Context, h hook.Hook) {
 		}
 		decide(e.Decide(ev))
 	}
+}
+
+// defaultReadHead opens path and returns up to the first classify.MaxScanBytes
+// bytes (the classifier's scan window). The agent runs as root, so it can read
+// the head regardless of the calling process's own permissions. A zero-byte
+// file returns an empty slice, nil err.
+func defaultReadHead(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	buf := make([]byte, classify.MaxScanBytes)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		return nil, err
+	}
+	return buf[:n], nil
 }

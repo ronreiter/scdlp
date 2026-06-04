@@ -12,9 +12,9 @@ func indexBytes(haystack, needle []byte) int {
 	return bytes.Index(haystack, needle)
 }
 
-// maxScanBytes is the per-file content-scan window. Files longer than this
+// MaxScanBytes is the per-file content-scan window. Files longer than this
 // are scanned only up to this offset.
-const maxScanBytes = 4096
+const MaxScanBytes = 4096
 
 // tokenRe is the surrounding-token shape we extract around each Aho-Corasick
 // hit. Matches the longest run of bytes that could form a credential token.
@@ -41,8 +41,8 @@ func (c *Classifier) ClassifyBuf(buf []byte) Verdict {
 	if len(buf) == 0 {
 		return Verdict{Reason: "empty"}
 	}
-	if len(buf) > maxScanBytes {
-		buf = buf[:maxScanBytes]
+	if len(buf) > MaxScanBytes {
+		buf = buf[:MaxScanBytes]
 	}
 
 	// Pass 1: PEM private-key header — single regex, very cheap.

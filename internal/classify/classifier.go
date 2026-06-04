@@ -37,6 +37,7 @@ func New() *Classifier {
 
 // ClassifyBuf returns a Verdict for the supplied buffer. Only the first
 // MaxScanBytes are inspected. Returns the highest-confidence finding.
+// Falls back to a generic key/value + entropy heuristic for secrets without a known provider prefix.
 func (c *Classifier) ClassifyBuf(buf []byte) Verdict {
 	if len(buf) == 0 {
 		return Verdict{Reason: "empty"}

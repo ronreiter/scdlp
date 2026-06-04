@@ -22,8 +22,11 @@ type kvPair struct {
 //	"key": "value"        (json) and  key: value  (yaml)
 //
 // It is a lexical scan, not a parser — it must tolerate truncated documents.
+// The value must begin on the same line as the key ([ \t]* after the separator,
+// not \s*) so that YAML mapping-parent keys (e.g. "user:" with no inline value)
+// are skipped and their nested children are extracted correctly instead.
 var pairRe = regexp.MustCompile(
-	`(?m)["']?([A-Za-z0-9_.\-]+)["']?\s*[:=]\s*(?:"([^"]*)"|'([^']*)'|([^\s,}]+))`)
+	`(?m)["']?([A-Za-z0-9_.\-]+)["']?\s*[:=][ \t]*(?:"([^"]*)"|'([^']*)'|([^\s,}]+))`)
 
 // extractPairs pulls candidate (key, value) pairs from buf, capped for the hot path.
 func extractPairs(buf []byte) []kvPair {

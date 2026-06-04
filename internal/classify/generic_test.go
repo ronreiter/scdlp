@@ -58,3 +58,19 @@ func TestClassifyGeneric_IgnoresShortValue(t *testing.T) {
 		t.Fatalf("short value must not flag, got %+v", v)
 	}
 }
+
+func TestExtractPairs_NestedYAMLSkipsParentKey(t *testing.T) {
+	buf := []byte("users:\n- name: admin\n  user:\n    token: kFh9Lm2Qp7Rt4Vx1Zc6Bn3Ws8Yd0Ja5Ke\n")
+	got := map[string]string{}
+	for _, p := range extractPairs(buf) {
+		got[p.key] = p.value
+	}
+	if got["token"] != "kFh9Lm2Qp7Rt4Vx1Zc6Bn3Ws8Yd0Ja5Ke" {
+		t.Fatalf("nested token not extracted: %q (pairs=%v)", got["token"], got)
+	}
+	// The mapping-parent key `user:` has no inline value, so it must not appear
+	// as a pair at all (it must not swallow the child `token:` as its value).
+	if v, exists := got["user"]; exists {
+		t.Fatalf("parent key user must not appear in pairs, got value %q", v)
+	}
+}

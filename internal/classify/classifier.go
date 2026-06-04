@@ -36,7 +36,7 @@ func New() *Classifier {
 }
 
 // ClassifyBuf returns a Verdict for the supplied buffer. Only the first
-// maxScanBytes are inspected. Returns the highest-confidence finding.
+// MaxScanBytes are inspected. Returns the highest-confidence finding.
 func (c *Classifier) ClassifyBuf(buf []byte) Verdict {
 	if len(buf) == 0 {
 		return Verdict{Reason: "empty"}

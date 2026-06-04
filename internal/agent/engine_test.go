@@ -399,6 +399,29 @@ func TestEngine_InScope_BenignContent_AllowsWithoutPromptOrRule(t *testing.T) {
 	if len(rs) != 0 {
 		t.Fatalf("clean scan must not write a rule, found %d", len(rs))
 	}
+	// Spec §5: clean allows must be recorded with verdict "allow-clean".
+	// The engine writes audit rows asynchronously, so poll briefly.
+	deadline := time.Now().Add(time.Second)
+	var auditVerdict string
+	for time.Now().Before(deadline) {
+		evts, err := adb.Tail(audit.TailFilter{Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range evts {
+			if e.FilePath == env {
+				auditVerdict = e.Verdict
+				break
+			}
+		}
+		if auditVerdict != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if auditVerdict != "allow-clean" {
+		t.Fatalf("expected audit verdict %q, got %q", "allow-clean", auditVerdict)
+	}
 }
 
 func TestEngine_InScope_SecretContent_DeniesAndPrompts(t *testing.T) {

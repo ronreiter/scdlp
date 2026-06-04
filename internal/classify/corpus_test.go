@@ -83,3 +83,19 @@ func TestCorpus_PositivesAndNegatives(t *testing.T) {
 		t.Errorf("FALSE POSITIVE (negative flagged): %s", f)
 	}
 }
+
+func TestCorpus_DetectorLabels(t *testing.T) {
+	c := New()
+	cases := map[string]string{ // file under testdata/corpus/positive → expected Match
+		"aws-access-key.env":     "aws-access-key",
+		"generic-api-token.json": "generic-credential",
+		"id_rsa.pem":             "pem-private-key",
+	}
+	for file, want := range cases {
+		p := "testdata/corpus/positive/" + file
+		v := c.ClassifyBuf(readHead(t, p))
+		if v.Match != want {
+			t.Errorf("%s: want Match %q, got %q (reason=%q)", file, want, v.Match, v.Reason)
+		}
+	}
+}

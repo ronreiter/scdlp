@@ -9,7 +9,10 @@ import (
 
 var placeholderRe = regexp.MustCompile(`(?i)^(changeme|xxx+|your[\-_]?(token|secret|key|password)[\-_]?here?|todo|fixme|placeholder|example)$`)
 var anglePlaceholderRe = regexp.MustCompile(`^<[^>]+>$`)
-var dollarPlaceholderRe = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*\}$`)
+
+// dollarPlaceholderRe matches ${VAR} and also ${VAR (without closing brace),
+// because pair-extracting regexes that stop at '}' produce the truncated form.
+var dollarPlaceholderRe = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*\}?$`)
 
 // IsPlaceholder reports whether the value is one of the common documentation
 // placeholders that should never be treated as a real secret.

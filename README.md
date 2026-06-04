@@ -28,6 +28,68 @@ Three local processes:
 - **`scdlp`** — CLI, talks to the daemon over a Unix socket.
 - **scdlp-helper** — Swift menu-bar app: approval prompts + dashboard (History / Policy / Trusted Apps / Rules) + kill switch.
 
+## Classification engine
+
+Before scdlp prompts you about a file, it asks one question: *does this file
+actually contain a secret?* That check is the classifier in
+`internal/classify`. Its only entry point on the decision path is
+`Classifier.ClassifyBuf`, which inspects the first **4 KiB** of a file
+(`classify.MaxScanBytes`) and returns a `Verdict{Match, Value, Confidence,
+Reason}`. The engine reduces that to a single boolean — `Verdict.IsSecret()`,
+defined as `Confidence >= 0.6`.
+
+The classifier is built once (`classify.New()`), is immutable, and is safe for
+concurrent use. At construction it flattens every known provider prefix into a
+single [Aho-Corasick](https://en.wikipedia.org/wiki/Aho%E2%80%93Corasick_algorithm)
+automaton, so all prefixes are matched in one linear pass regardless of how many
+providers are configured.
+
+Provider knowledge lives in two parallel tables:
+
+- `prefixes.go` — cheap literal anchors per provider (`AKIA…` AWS, `ghp_` /
+  `github_pat_` GitHub, `xoxb-` Slack, `sk-` / `sk-proj-` OpenAI, `sk_live_`
+  Stripe, `AIza` Google, `npm_`, `hf_`, `eyJ` JWT, …).
+- `patterns.go` — a full validation regex per provider (e.g. AWS
+  `^(AKIA|ASIA|…)[A-Z0-9]{16}$`), plus `PEMPrivateKeyRe` for private-key headers.
+
+`ClassifyBuf` runs a short pipeline over the buffer:
+
+1. **Empty guard.** An empty buffer is "not a secret" (this is why a zero-byte
+   protected file is allowed). Anything longer than 4 KiB is truncated.
+2. **PEM private keys.** A single regex matches the `-----BEGIN … PRIVATE
+   KEY-----` header → `Confidence 1.0`. It triggers on the header alone, because
+   a large key's body can be cut off by the 4 KiB window.
+3. **Provider tokens (two stages).**
+   - *Anchor:* the Aho-Corasick pass reports which prefixes occur. No prefix →
+     "not a secret" (the fast path for ordinary config files).
+   - *Validate:* for each prefix hit, the surrounding token is extracted and run
+     against that provider's regex. A full match → `Confidence 1.0` (returns
+     immediately). A prefix with no well-formed token → a weak `Confidence 0.4`.
+
+The highest-confidence finding wins. Because the prompt threshold is `0.6`, only
+a **well-formed** credential (or a PEM header) blocks: a bare prefix appearing in
+prose (`sk-`, `AKIA…` with the wrong shape) scores `0.4` and is treated as
+benign. This deliberately trades recall for a low false-positive rate — a false
+"secret" means an unnecessary prompt.
+
+The engine uses the result like this: a path that matched a `prompt` glob but
+whose first 4 KiB is **not** a secret is a false positive of the coarse path
+rule, so it is allowed silently (audit verdict `allow-clean`); a secret, or a
+file whose head can't be read, falls through to deny-first + prompt. See
+`docs/superpowers/specs/2026-06-04-content-scan-allow-design.md`.
+
+Properties: deterministic (no entropy scoring, ML, or network — same bytes always
+yield the same verdict), microsecond-scale on 4 KiB (which is what lets it run on
+the synchronous Endpoint Security decision path), and bounded to a fixed provider
+list. A secret type with no prefix entry, a credential past the 4 KiB window, or a
+malformed-but-real token will read as benign.
+
+> Note: `internal/classify` also ships value-level heuristics carried over from
+> [`stasher`](https://github.com/ronreiter/stasher) — Shannon entropy
+> (`entropy.go`), secret-ish key names, and placeholder/URL/boolean denoisers
+> (`denoise.go`). These are exercised by tests but are **not** wired into
+> `ClassifyBuf`; scdlp's buffer scan is purely prefix-anchored regex + PEM.
+
 ## Build
 
 We use [`go-task`](https://taskfile.dev) instead of make. Install once with

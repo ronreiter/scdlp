@@ -319,6 +319,21 @@ func (e *Engine) decideInner(ev hook.Event) (hook.Decision, *audit.Event) {
 		audited.RuleID = &r.ID
 		return hook.Deny, audited
 	default:
+		// Content tier: this path matched a prompt glob but has no rule yet.
+		// The glob is coarse (it flags candidate secret files by location); if
+		// the first 4 KiB holds no actual secret, it's a false positive — allow
+		// it silently instead of nagging. Nothing is persisted: every open
+		// re-scans, so a file that later gains a secret is caught next time.
+		if e.cfg.Classifier != nil {
+			if buf, rerr := e.cfg.ReadHead(ev.Path); rerr == nil {
+				if !e.cfg.Classifier.ClassifyBuf(buf).IsSecret() {
+					audited.Verdict = "allow-clean"
+					return hook.Allow, audited
+				}
+			}
+			// read failed (fail safe) or secret found → fall through to
+			// today's helper-present / cooldown / deny-first + prompt logic.
+		}
 		// Deny-first only if a prompt UI is available to approve it; if the
 		// helper is down, fail OPEN rather than silently blocking.
 		if e.cfg.HelperPresent != nil && !e.cfg.HelperPresent() {

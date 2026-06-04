@@ -56,3 +56,28 @@ func TestIsBooleanOrNumeric(t *testing.T) {
 		}
 	}
 }
+
+func TestIsHashOrUUID(t *testing.T) {
+	yes := []string{
+		"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", // sha256 (64 hex)
+		"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",                         // sha1 (40 hex)
+		"5d41402abc4b2a76b9719d911017c592",                                 // md5 (32 hex)
+		"550e8400-e29b-41d4-a716-446655440000",                             // uuid
+	}
+	for _, v := range yes {
+		if !IsHashOrUUID(v) {
+			t.Errorf("want IsHashOrUUID(%q)=true", v)
+		}
+	}
+	no := []string{
+		"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", // base64-ish secret (has / and mixed)
+		"SK0123456789abcdef0123456789abcdef",       // 34 chars, not a digest length
+		"Xb9Kfated2QmZ1pR7sVn0LwYc4Hh6Tj8",         // mixed-base token
+		"hello-world",
+	}
+	for _, v := range no {
+		if IsHashOrUUID(v) {
+			t.Errorf("want IsHashOrUUID(%q)=false", v)
+		}
+	}
+}

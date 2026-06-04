@@ -45,8 +45,8 @@ Two deliverables, tightly coupled:
 | # | Detector | Confidence | Notes |
 |---|----------|-----------|-------|
 | A | PEM private key header (`PEMPrivateKeyRe`) | 1.0 | Existing. Header-only (body may be truncated). Public CERTIFICATE/PUBLIC KEY not matched. |
-| B | Provider prefix (Aho-Corasick) → provider regex | 1.0 full / 0.4 prefix-only | Existing, expanded table (§5). |
-| C | Generic key/value credential heuristic | 0.8 | New (§4). Catches unknown secrets in env/JSON/YAML/ini. |
+| B | Provider prefix (Aho-Corasick) → provider regex | 1.0 full / 0.4 prefix-only | Existing, expanded table (§5). Twilio removed — see §5. |
+| C | Generic key/value credential heuristic | 0.8 | New (§4). Catches unknown secrets in env/JSON/YAML/ini. Twilio keys under api-key-style names caught here. |
 | D | PKCS#12 keystore marker | 1.0 | New, best-effort (§6). Dropped if unreliable on the corpus. |
 
 Pass-1 PEM and a full provider-regex match short-circuit at 1.0 as today. C and
@@ -99,11 +99,15 @@ points; §7 tunes them against the negative corpus.
 Add common providers to `prefixes.go` and matching validation regexes to
 `patterns.go`, following the existing two-table pattern (literal prefix anchors
 + `^prefix…shape…$` validation regex). Candidate additions (final set validated
-against the corpus): Twilio (`SK…`, `AC…`), DigitalOcean (`dop_v1_`), Datadog,
-Postmark, Square (`sq0atp-`, `sq0csp-`), Shopify (`shpat_`, `shpss_`), Azure
-storage `AccountKey=` base64, GitLab/GitHub/Slack/OpenAI/Stripe/Google/npm/HF/
-Sentry/SendGrid (already present). Every added provider gets at least one
-positive corpus fixture.
+against the corpus): DigitalOcean (`dop_v1_`), Datadog, Postmark, Square
+(`sq0atp-`, `sq0csp-`), Shopify (`shpat_`, `shpss_`), Azure storage
+`AccountKey=` base64, GitLab/GitHub/Slack/OpenAI/Stripe/Google/npm/HF/Sentry/
+SendGrid (already present). Every added provider gets at least one positive
+corpus fixture.
+
+Twilio was evaluated and dropped — its 2-character `SK`/`AC` prefixes match too
+broadly to validate safely in a byte window; Twilio keys stored under
+api-key-style names are caught by Detector C instead.
 
 ## 6. Detector D — PKCS#12 keystore (best-effort)
 
@@ -208,3 +212,8 @@ the label assertions hold. This is the definition of done for the engine work.
   clean value. The provider and PEM detectors still apply to the raw bytes.
 - **L-C5.** Detection remains a fixed, deterministic rule set; novel provider
   formats require adding a prefix/pattern (and a fixture).
+- **L-C6.** Detector C exempts structured identifiers — canonical UUIDs and bare
+  hex digests (32/40/64 hex) — from flagging, because these commonly appear under
+  secret-ish keys as hashes/fingerprints/correlation IDs. A credential that is
+  exactly UUID- or hex-digest-shaped and lacks a known provider prefix will be
+  treated as benign. Non-hex secrets and prefixed credentials are unaffected.

@@ -16,7 +16,6 @@ var ProviderPrefixes = map[string][]string{
 	"sentry":         {"sntrys_", "sntryu_"},
 	"sendgrid":       {"SG."},
 	"jwt":            {"eyJ"},
-	"twilio":         {"SK", "AC"},
 	"digitalocean":   {"dop_v1_", "dor_v1_", "doo_v1_"},
 	"shopify":        {"shpat_", "shpss_", "shpca_"},
 	"square":         {"sq0atp-", "sq0csp-"},

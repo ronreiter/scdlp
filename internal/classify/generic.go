@@ -56,7 +56,7 @@ func classifyGeneric(buf []byte) Verdict {
 		if p.value == "" || len(p.value) < minSecretLen {
 			continue
 		}
-		if IsPlaceholder(p.value) || IsBooleanOrNumeric(p.value) || IsURLWithoutEmbeddedCreds(p.value) {
+		if IsPlaceholder(p.value) || IsBooleanOrNumeric(p.value) || IsURLWithoutEmbeddedCreds(p.value) || IsHashOrUUID(p.value) {
 			continue
 		}
 		if ShannonEntropy(p.value) < minSecretEntropy {

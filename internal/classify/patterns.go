@@ -18,7 +18,6 @@ var ProviderPatterns = map[string]*regexp.Regexp{
 	"sentry":         regexp.MustCompile(`^sntry[su]_[A-Za-z0-9]{30,}$`),
 	"sendgrid":       regexp.MustCompile(`^SG\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}$`),
 	"jwt":            regexp.MustCompile(`^eyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+$`),
-	"twilio":         regexp.MustCompile(`^(SK|AC)[0-9a-fA-F]{32}$`),
 	"digitalocean":   regexp.MustCompile(`^(dop|dor|doo)_v1_[0-9a-f]{64}$`),
 	"shopify":        regexp.MustCompile(`^shp(at|ss|ca)_[0-9a-fA-F]{32}$`),
 	"square":         regexp.MustCompile(`^sq0(atp|csp)-[A-Za-z0-9_\-]{22,}$`),

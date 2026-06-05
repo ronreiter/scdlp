@@ -37,6 +37,7 @@ func New() *Classifier {
 
 // ClassifyBuf returns a Verdict for the supplied buffer. Only the first
 // MaxScanBytes are inspected. Returns the highest-confidence finding.
+// Falls back to a generic key/value + entropy heuristic for secrets without a known provider prefix.
 func (c *Classifier) ClassifyBuf(buf []byte) Verdict {
 	if len(buf) == 0 {
 		return Verdict{Reason: "empty"}
@@ -57,6 +58,9 @@ func (c *Classifier) ClassifyBuf(buf []byte) Verdict {
 	// Pass 2: Aho-Corasick provider-prefix scan.
 	hits := c.ac.Match(buf)
 	if len(hits) == 0 {
+		if g := classifyGeneric(buf); g.IsSecret() {
+			return g
+		}
 		return Verdict{Reason: "no provider prefix"}
 	}
 
@@ -104,6 +108,13 @@ func (c *Classifier) ClassifyBuf(buf []byte) Verdict {
 			}
 			search = search[idx+len(prefix):]
 			offset += idx + len(prefix)
+		}
+	}
+	// Detector C: generic key/value + entropy. Only needed when the provider
+	// stage did not already yield a confident (>= 0.6) finding.
+	if !best.IsSecret() {
+		if g := classifyGeneric(buf); g.IsSecret() {
+			return g
 		}
 	}
 	if best.Match == "" {

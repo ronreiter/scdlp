@@ -1,0 +1,7 @@
+{
+  "service": "billing",
+  "port": 8080,
+  "log_level": "info",
+  "retries": 3,
+  "feature_flags": { "new_ui": true, "beta": false }
+}

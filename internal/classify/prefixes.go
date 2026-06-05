@@ -16,6 +16,9 @@ var ProviderPrefixes = map[string][]string{
 	"sentry":         {"sntrys_", "sntryu_"},
 	"sendgrid":       {"SG."},
 	"jwt":            {"eyJ"},
+	"digitalocean":   {"dop_v1_", "dor_v1_", "doo_v1_"},
+	"shopify":        {"shpat_", "shpss_", "shpca_"},
+	"square":         {"sq0atp-", "sq0csp-"},
 }
 
 // AllPrefixes returns every literal prefix in a single flat slice.

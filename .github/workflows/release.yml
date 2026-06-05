@@ -32,7 +32,40 @@ permissions:
   contents: write   # needed to create releases
 
 jobs:
+  # Gate the release on the same build/vet/test suite CI runs. Kept as a
+  # separate job (not an inline step) so the test signal is decoupled from the
+  # sign/notarize/release pipeline below — build-and-release won't start unless
+  # this passes.
+  test:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/Library/Caches/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: ${{ runner.os }}-go-
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Unit + integration tests
+        run: go test ./...
+
   build-and-release:
+    needs: test
     runs-on: macos-15
     timeout-minutes: 30
     steps:
@@ -50,9 +83,6 @@ jobs:
             ~/Library/Caches/go-build
           key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
           restore-keys: ${{ runner.os }}-go-
-
-      - name: Unit + integration tests
-        run: go test ./...
 
       - name: Decode signing assets
         env:
